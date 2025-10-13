@@ -21,7 +21,7 @@ env/
 
 # /outputs/  ← NO lo ignores: queremos versionarlo
 
-# mostrar outputs (todo ligero), ignorar binarios pesados en cualquier sitio
+# --- binarios pesados en cualquier sitio (por seguridad) ---
 *.h5
 *.hdf5
 *.ckpt
@@ -33,9 +33,12 @@ env/
 *.tar
 *.tar.gz
 
-# ignorar contenido de saved_models pero mostrar la carpeta con .gitkeep
-/saved_models/*
-!saved_models/.gitkeep
+# --- outputs: versionar todo, excepto pesos en saved_models ---
+!outputs/**
+
+# ignora pesos dentro de outputs/saved_models (pero deja el .gitkeep)
+outputs/saved_models/*
+!outputs/saved_models/.gitkeep
 
 # Versionar outputs/ pero NO binarios pesados dentro
 !outputs/**

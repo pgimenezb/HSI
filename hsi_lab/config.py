@@ -45,6 +45,7 @@ variables = {
     "target_mode": "pigments+binders",
     "model": "Model 1",
 
-"models_dir": "saved_models",
-"outputs_dir": "outputs",
+    "seed": 42,
+    "models_dir": "outputs/saved_models",
+    "outputs_dir": "outputs/other_outputs",
 }
