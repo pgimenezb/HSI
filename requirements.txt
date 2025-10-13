@@ -1,0 +1,11 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+scipy
+h5py
+tensorflow
+optuna
+iterative-stratification
+lightgbm
+ipython

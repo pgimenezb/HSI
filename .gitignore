@@ -1,0 +1,25 @@
+cat > .gitignore <<'EOF'
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.vscode/
+logs/
+outputs/
+models/
+data/
+datasets/
+checkpoints/
+*.h5
+*.hdf5
+*.ckpt
+*.npz
+*.npy
+*.log
+.DS_Store
+Thumbs.db
+EOF
