@@ -21,3 +21,8 @@ screen -S run_gpu1 -dm bash -lc 'CUDA_VISIBLE_DEVICES=1 ./run.sh dnn 80 1 exp_gp
 #Si es CPU-only, cuida num_threads de TF para convivir:
 tf.config.threading.set_intra_op_parallelism_threads(4)
 tf.config.threading.set_inter_op_parallelism_threads(4)
+
+#Añadir modelo nuevo: crea hsi_lab/models/mi_modelo.py con tune_and_train.
+Lanzar un run:
+./run.sh cnn 60 40 exp_cnn1
+./run.sh dnn 80 1  exp_dnn1
