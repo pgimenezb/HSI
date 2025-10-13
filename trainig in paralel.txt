@@ -1,0 +1,23 @@
+# simple function (bash)
+set -e
+conda activate hsi
+python train.py --model "$1" --epochs "${2:-50}" --trials "${3:-30}" --exp "${4:-exp}" \
+  > "outputs/other_outputs/runs/${4:-exp}_$1.log" 2>&1
+
+# screens (bash)
+# CNN
+screen -S run_cnn_1 -dm bash -lc './run.sh cnn 60 40 exp_cnn1'
+# DNN
+screen -S run_dnn_1 -dm bash -lc './run.sh dnn 80 1 exp_dnn1'
+# Re-attach para ver logs:
+screen -r run_cnn_1
+#salir de la sesión dejando el proceso vivo: Ctrl+A, luego D (de "detach")
+
+
+#Si tienes GPU(s): aísla cada run con CUDA_VISIBLE_DEVICES:
+screen -S run_gpu0 -dm bash -lc 'CUDA_VISIBLE_DEVICES=0 ./run.sh cnn 60 40 exp_gpu0'
+screen -S run_gpu1 -dm bash -lc 'CUDA_VISIBLE_DEVICES=1 ./run.sh dnn 80 1 exp_gpu1'
+
+#Si es CPU-only, cuida num_threads de TF para convivir:
+tf.config.threading.set_intra_op_parallelism_threads(4)
+tf.config.threading.set_inter_op_parallelism_threads(4)
