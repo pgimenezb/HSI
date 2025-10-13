@@ -18,12 +18,10 @@ env/
 
 # Datos / pesos en la RAÍZ (no afecta a hsi_lab/*)
 #/data/
-#/models/
-/saved_models/
-/datasets/
+
 # /outputs/  ← NO lo ignores: queremos versionarlo
 
-# PROHIBIR binarios pesados (en cualquier carpeta)
+# mostrar outputs (todo ligero), ignorar binarios pesados en cualquier sitio
 *.h5
 *.hdf5
 *.ckpt
@@ -35,9 +33,12 @@ env/
 *.tar
 *.tar.gz
 
-# PERMITIR explícitamente logs y texto dentro de outputs/
+# ignorar contenido de saved_models pero mostrar la carpeta con .gitkeep
+/saved_models/*
+!saved_models/.gitkeep
+
+# Versionar outputs/ pero NO binarios pesados dentro
 !outputs/**
-# …pero vuelve a ignorar dentro de outputs cualquier binario pesado:
 outputs/*.h5
 outputs/*.hdf5
 outputs/*.ckpt

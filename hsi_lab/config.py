@@ -45,7 +45,6 @@ variables = {
     "target_mode": "pigments+binders",
     "model": "Model 1",
 
-    "seed": 42,
-    "models_dir": "saved_models",   # high weight outputs
-    "outputs_dir": "outputs",       # low weight outputs
+"models_dir": "saved_models",
+"outputs_dir": "outputs",
 }
