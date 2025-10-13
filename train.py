@@ -130,6 +130,32 @@ def main():
     # guardar artefactos
     save_artifacts(model, study, best, cfg)
 
+    import json, os
+    from datetime import datetime
+
+    # Guardar métricas clave en JSON
+    metrics_path = os.path.join(cfg["outputs_dir"], "metrics.json")
+    summary = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "strict_accuracy_test": float(results.get("strict_accuracy", "nan")),
+        "best_params": best,  # ya lo tienes del tuning
+    }
+    with open(metrics_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # Guardar un README/reporte ligero en Markdown
+    report_md = os.path.join(cfg["outputs_dir"], "reports.md")
+    with open(report_md, "a") as f:
+        f.write(f"\n## Run {summary['timestamp']}\n")
+        f.write(f"- Strict Accuracy (test): **{summary['strict_accuracy_test']:.4f}**\n")
+        f.write(f"- Best params: `{best}`\n")
+
+    import matplotlib.pyplot as plt
+
+    # ejemplo: guardar figura después de plotear algo
+    os.makedirs(os.path.join(cfg["outputs_dir"], "figures"), exist_ok=True)
+    plt.savefig(os.path.join(cfg["outputs_dir"], "figures", "pca_example.png"), dpi=120, bbox_inches="tight")
+
 
 if __name__ == "__main__":
     main()

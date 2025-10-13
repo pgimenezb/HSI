@@ -9,18 +9,24 @@ env/
 .vscode/
 logs/
 
-# Ignorar SOLO en la raíz (con / inicial)
-#/models/         ← NO usar si tu código está en hsi_lab/models (se ignoraría solo la raíz)
-#/data/           ← idem
-/outputs/         # puedes dejarlo ignorado si no quieres subir resultados
 /datasets/
 /checkpoints/
-/saved_models/
-*.h5
-*.hdf5
-*.ckpt
-*.npz
-*.npy
+/saved_models/         # si guardas pesos aquí
+
+# Permite outputs/ pero ignora grandes dentro
+# (adaptado a tu proyecto)
+outputs/*.h5
+outputs/*.hdf5
+outputs/*.npz
+outputs/*.npy
+outputs/*.ckpt
+outputs/*.pt
+outputs/*.pth
+outputs/*.zip
+outputs/*.tar
+outputs/*.tar.gz
+
+# archivos de sistema
 *.log
 .DS_Store
 Thumbs.db
