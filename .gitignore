@@ -1,4 +1,3 @@
-cat > .gitignore <<'EOF'
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -9,11 +8,14 @@ env/
 .ipynb_checkpoints/
 .vscode/
 logs/
-outputs/
-models/
-data/
-datasets/
-checkpoints/
+
+# Ignorar SOLO en la raíz (con / inicial)
+#/models/         ← NO usar si tu código está en hsi_lab/models (se ignoraría solo la raíz)
+#/data/           ← idem
+/outputs/         # puedes dejarlo ignorado si no quieres subir resultados
+/datasets/
+/checkpoints/
+/saved_models/
 *.h5
 *.hdf5
 *.ckpt
@@ -22,4 +24,4 @@ checkpoints/
 *.log
 .DS_Store
 Thumbs.db
-EOF
+
