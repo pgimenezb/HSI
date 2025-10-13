@@ -46,6 +46,6 @@ variables = {
     "model": "Model 1",
 
     "seed": 42,
-    "outputs_dir": "outputs",
-    "models_dir": "models"
+    "models_dir": "saved_models",   # high weight outputs
+    "outputs_dir": "outputs",       # low weight outputs
 }

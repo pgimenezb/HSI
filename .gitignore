@@ -1,33 +1,54 @@
+# Bytecode / caches
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Entornos
 .env
 .venv/
 venv/
 env/
-.ipynb_checkpoints/
+
+# VS Code / notebooks cache
 .vscode/
-logs/
+.ipynb_checkpoints/
 
+# Logs (⚠️ permitiremos logs en outputs más abajo)
+# *.log   ← quita o comenta esta línea si quieres subir logs globalmente
+
+# Datos / pesos en la RAÍZ (no afecta a hsi_lab/*)
+#/data/
+#/models/
+/saved_models/
 /datasets/
-/checkpoints/
-/saved_models/         # si guardas pesos aquí
+# /outputs/  ← NO lo ignores: queremos versionarlo
 
-# Permite outputs/ pero ignora grandes dentro
-# (adaptado a tu proyecto)
+# PROHIBIR binarios pesados (en cualquier carpeta)
+*.h5
+*.hdf5
+*.ckpt
+*.npz
+*.npy
+*.pt
+*.pth
+*.zip
+*.tar
+*.tar.gz
+
+# PERMITIR explícitamente logs y texto dentro de outputs/
+!outputs/**
+# …pero vuelve a ignorar dentro de outputs cualquier binario pesado:
 outputs/*.h5
 outputs/*.hdf5
+outputs/*.ckpt
 outputs/*.npz
 outputs/*.npy
-outputs/*.ckpt
 outputs/*.pt
 outputs/*.pth
 outputs/*.zip
 outputs/*.tar
 outputs/*.tar.gz
 
-# archivos de sistema
-*.log
+# Sistema
 .DS_Store
 Thumbs.db
-
