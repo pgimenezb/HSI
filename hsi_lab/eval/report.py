@@ -1,5 +1,6 @@
-# hsi_lab/eval/report.py
 import os
+from typing import Optional, List
+
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import (
@@ -10,17 +11,21 @@ from sklearn.metrics import (
 
 def plot_confusion_matrix_by_vector(
     df,
-    y_pred_prob,
-    y_true,
+    y_pred_prob: np.ndarray,
+    y_true: np.ndarray,
     threshold: float = 0.5,
-    save_path: str | None = None,
+    save_path: Optional[str] = None,
     show: bool = False,
 ):
+    """
+    Construye una matriz de confusión donde cada clase es un vector multilabel completo.
+    Normaliza por filas (%). Compatible con Python <3.10.
+    """
     # --- Binarización ---
     y_pred_bin = (y_pred_prob >= float(threshold)).astype(int)
     y_true_bin = y_true.astype(int)
 
-    # --- Construcción de etiquetas legibles por vector ---
+    # --- Mapa tuple(vector)->etiqueta legible ---
     def _row_to_label(r):
         file_ = r.get("File", "?")
         binder = r.get("Binder", r.get("binder", "?"))
@@ -28,7 +33,7 @@ def plot_confusion_matrix_by_vector(
         return f"{file_}, {binder}, {mixture}"
 
     vec_to_label = {}
-    if "Multi" in df.columns:
+    if hasattr(df, "iterrows") and "Multi" in df.columns:
         for _, r in df.iterrows():
             try:
                 key = tuple(r["Multi"])
@@ -44,7 +49,7 @@ def plot_confusion_matrix_by_vector(
     pred_labels = [vector_to_label(v) for v in y_pred_bin]
     true_labels = [vector_to_label(v) for v in y_true_bin]
 
-    # orden estable siguiendo true_labels
+    # Orden estable según aparición en y_true
     seen = {}
     for lab in true_labels:
         if lab not in seen:
@@ -53,19 +58,18 @@ def plot_confusion_matrix_by_vector(
     if labels.size == 0:
         labels = np.unique(true_labels + pred_labels)
 
-    # matriz de confusión (conteos)
     cm_counts = confusion_matrix(true_labels, pred_labels, labels=labels)
 
-    # normalización por fila
     with np.errstate(divide="ignore", invalid="ignore"):
         row_sums = cm_counts.sum(axis=1, keepdims=True)
         cm_percent = cm_counts.astype(float) / np.maximum(row_sums, 1)
         cm_percent = np.nan_to_num(cm_percent)
 
-    # figura
+    # Figura tamaño dinámico
     n_labels = len(labels)
     fig_w = max(10, min(0.6 * n_labels, 40))
     fig_h = max(8,  min(0.6 * n_labels, 40))
+
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     disp = ConfusionMatrixDisplay(cm_percent, display_labels=labels)
     disp.plot(cmap=plt.cm.Blues, ax=ax, values_format=".2f", colorbar=True)
@@ -182,7 +186,7 @@ def print_global_and_per_group_metrics(
     print(f"Non-zero accuracy per label:   {glob_acc['non_zero_label']:.4f}")
     print(f"Strict accuracy:               {glob_acc['strict']:.4f}")
     print(f"General accuracy (sklearn):    {glob_acc['general']:.4f}")
-    print(f\"Keras-like\" accuracy:         {glob_acc['keras_like']:.4f}")
+    print(f"Keras-like\" accuracy:        {glob_acc['keras_like']:.4f}")
     print(f"Hamming accuracy:              {glob_acc['hamming_acc']:.4f}")
 
     print("\n🔹 Other Metrics:")
@@ -215,7 +219,7 @@ def print_global_and_per_group_metrics(
         print(f"Non-zero accuracy per label:   {acc['non_zero_label']:.4f}")
         print(f"Strict accuracy:               {acc['strict']:.4f}")
         print(f"General accuracy (sklearn):    {acc['general']:.4f}")
-        print(f\"Keras-like\" accuracy:         {acc['keras_like']:.4f}")
+        print(f"Keras-like\" accuracy:         {acc['keras_like']:.4f}")
         print(f"Hamming accuracy:              {acc['hamming_acc']:.4f}")
 
         print("\n🔹 Other Metrics:")

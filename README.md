@@ -103,6 +103,10 @@ export RID=$(date +%Y%m%d-%H%M%S)
 python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epochs 60 --reports --run-id "$RID"
 ```
 
+## Save to Git
+
+
+
 ## Troubleshooting
 
 - **No module named `hsi_lab`**  
