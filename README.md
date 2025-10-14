@@ -1,18 +1,128 @@
 # HSI
 
-Estructura modular:
-- `hsi_lab/config.py`: variables editables del experimento.
-- `hsi_lab/data/processor.py`: carga HDF5, dataframe, visualización.
-- `hsi_lab/models/metrics.py`: métricas y matrices de confusión.
-- `hsi_lab/models/cnn.py`: definición CNN y tuning con Optuna.
-- `train.py`: orquestador (carga datos → entrena → evalúa → guarda artefactos).
+Training CNN/DNN models for **multi-label** classification of VIS+SWIR spectra with Optuna.
 
-## Ejecutar
+## Project Layout
+
+Projects/HSI
+  train.py                      # orchestrator (load → split → tune → eval → save)
+``README.md
+    hsi_lab/
+        config.py                  # editable experiment variables
+      data/
+        processor.py            # HDF5 loading → DataFrame + helpers + caching
+      eval/
+        report.py               # reporting metrics and confusion matrix plotting
+      models/
+        metrics.py              # Keras metrics (e.g., strict_accuracy)
+        cnn_baseline.py
+        cnn_residual.py
+        cnn_dilated.py
+        dnn_baseline.py
+        dnn_selu.py
+        dnn_wide.py
+    outputs/
+      saved_models/
+        <RUN_ID>/               # heavy models (.h5 / *.keras)
+      other_outputs/
+        logs/                   # per-model logs (.log)
+        figures/                # plots (confusion matrix, etc.)
+
+## Quick Setup
+
 ```bash
 conda activate hsi
-python train.py --epochs 50 --trials 30
+pip install -r requirements.txt
+# if anything is missing:
+# pip install matplotlib optuna scikit-learn h5py pandas numpy
+```
 
+## Data Configuration
 
-## 2.4 `hsi_lab/__init__.py`
+Edit `hsi_lab/config.py`:
+
+- `data_folder`, `excel_file`
+- `num_files`, `start_index`
+- `selected_regions`, `selected_subregions`
+- `outputs_dir`, `models_dir` (they’re nested under `runs/<RUN_ID>` automatically)
+
+## Run (CLI)
+
+**Single model with full reports**
 ```bash
-printf "" > hsi_lab/__init__.py
+python train.py --models cnn_baseline --trials 40 --epochs 60 --reports
+```
+
+**Multiple models (same split, sequential by default)**
+```bash
+python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epochs 60 --reports
+```
+
+**Parallel across models (Joblib)**
+```bash
+python train.py --models cnn_baseline,cnn_residual,cnn_dilated   --n-jobs-models 3 --trials 40 --epochs 60 --reports
+```
+
+**Fixed RUN_ID to group outputs**
+```bash
+python train.py --run-id 20250101-120000 --models cnn_baseline --reports
+```
+If not provided, `train.py` generates `RUN_ID` from a timestamp. Optuna storage: `outputs/runs/<RUN_ID>/optuna.db`.
+
+## Outputs
+
+- **Per-model logs:** `outputs/runs/<RUN_ID>/logs/<model>.log`  
+  View live: `tail -f outputs/runs/<RUN_ID>/logs/cnn_baseline.log`
+- **Figures:** `outputs/runs/<RUN_ID>/figures/<model>_confusion_matrix.png` (only with `--reports`)
+- **Light artifacts:** `*_best_params.csv`, `*_trials_summary.csv`, `*_summary.json` under `outputs/runs/<RUN_ID>/`
+- **Models:** `saved_models/<RUN_ID>/<model>.h5` and `<model>.keras`
+
+## Tips
+
+- Ensure packages: `hsi_lab/`, `hsi_lab/data/`, `hsi_lab/models/`, `hsi_lab/eval/` all have `__init__.py`.
+- When running from repo root this usually isn’t needed, but if imports fail:
+  ```bash
+  export PYTHONPATH="$(pwd)"
+  ```
+
+## Run in a Screen
+
+```bash
+screen -S hsi
+conda activate hsi && cd ~/projects/HSI
+python train.py --models cnn_baseline,cnn_residual,cnn_dilated --reports
+# detach: Ctrl+A then D
+# reattach: screen -r hsi
+```
+
+**With log / explicit RUN_ID**
+```bash
+conda activate hsi
+cd ~/projects/HSI
+export RID=$(date +%Y%m%d-%H%M%S)
+python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epochs 60 --reports --run-id "$RID"
+```
+
+## Troubleshooting
+
+- **No module named `hsi_lab`**  
+  Add missing `__init__.py` files and/or:
+  ```bash
+  export PYTHONPATH="$(pwd)"
+  ```
+
+- **`matplotlib` not found / plotting fails**  
+  ```bash
+  pip install matplotlib
+  ```
+  and run with `--reports`.
+
+- **No figures saved**  
+  Use `--reports`. Images go to `outputs/runs/<RUN_ID>/figures/`.
+
+- **Stale DataFrame after changing pipeline**  
+  Cache lives in `outputs/cache/`. Delete it or call `dataframe_cached(force=True)`.
+
+---
+
+Use `train.py` to run one or several models, track each run under `runs/<RUN_ID>`, and find models in `saved_models/<RUN_ID>/` with detailed logs and metrics saved alongside.

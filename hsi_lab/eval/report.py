@@ -99,55 +99,132 @@ def plot_confusion_matrix_by_vector(
         "saved_to": saved_to,
     }
 
-def print_global_and_per_group_metrics(y_true, y_pred_prob, y_pred_bin,
-                                       pigment_idx, binder_idx, mixture_idx):
-    """Imprime métricas globales y por bloques (pigments/binders/mixtures)."""
+def print_global_and_per_group_metrics(
+    y_true: np.ndarray,
+    y_pred_prob: np.ndarray,
+    y_pred_bin: np.ndarray,
+    pigment_idx: list,
+    binder_idx: list,
+    mixture_idx: list,
+) -> None:
+    """
+    Imprime métricas globales y por bloques (Pigments / Binders / Mixtures).
+    - y_true:    (N, L) binario
+    - y_pred_prob: (N, L) probabilidades [0,1]
+    - y_pred_bin:  (N, L) binario
+    - *_idx: listas de índices de etiquetas para cada bloque
+    """
+
+    n_samples, n_labels = y_true.shape
     print("\n🟢 CLASSIFICATION REPORT")
     print("----------------------------------")
     print(classification_report(y_true, y_pred_bin, zero_division=0))
 
-    # Global
-    try:
-        roc_auc = roc_auc_score(y_true, y_pred_prob, average='micro')
-    except ValueError:
-        roc_auc = float('nan')
-    try:
-        avg_precision = average_precision_score(y_true, y_pred_prob, average='micro')
-    except ValueError:
-        avg_precision = float('nan')
+    # ---------- Índices usados ----------
+    print("\n🔹 Index ranges:")
+    print(f"Pigments: {pigment_idx if pigment_idx else '[]'}")
+    print(f"Binders : {binder_idx  if binder_idx  else '[]'}")
+    print(f"Mixtures: {mixture_idx if mixture_idx else '[]'}")
 
-    f1 = f1_score(y_true, y_pred_bin, average='micro', zero_division=0)
-    recall = recall_score(y_true, y_pred_bin, average='micro', zero_division=0)
-    precision = precision_score(y_true, y_pred_bin, average='micro', zero_division=0)
-    try:
-        ll = log_loss(y_true, y_pred_prob)
-    except ValueError:
-        ll = float('nan')
+    # ---------- Bloque de métricas: helpers ----------
+    def _safe_auc(yt, yp):
+        try:
+            return float(roc_auc_score(yt, yp, average='micro'))
+        except Exception:
+            return float('nan')
 
-    print("\n🔹 Global:")
-    print(f"F1={f1:.4f}  Precision={precision:.4f}  Recall={recall:.4f}  "
-          f"ROC-AUC={roc_auc:.4f}  AP={avg_precision:.4f}  LogLoss={ll:.4f}")
+    def _safe_ap(yt, yp):
+        try:
+            return float(average_precision_score(yt, yp, average='micro'))
+        except Exception:
+            return float('nan')
 
-    def block(name, idx):
+    def _safe_logloss(yt, yp):
+        try:
+            return float(log_loss(yt, yp))
+        except Exception:
+            return float('nan')
+
+    def _accuracy_pack(yt, yb):
+        # métricas de "accuracy" varias
+        non_zero_sample = float(np.mean(np.any((yt & yb) == 1, axis=1)))
+        non_zero_label  = float(np.mean(np.any((yt == yb), axis=0)))
+        strict          = float(np.mean(np.all(yt == yb, axis=1)))
+        general         = float(accuracy_score(yt, yb))
+        keras_like      = float((yt == yb).mean(axis=1).mean())
+        hamming_acc     = float(1.0 - hamming_loss(yt, yb))
+        return {
+            "non_zero_sample": non_zero_sample,
+            "non_zero_label": non_zero_label,
+            "strict": strict,
+            "general": general,
+            "keras_like": keras_like,
+            "hamming_acc": hamming_acc,
+        }
+
+    def _prf_pack(yt, yb):
+        f1  = float(f1_score(yt, yb, average='micro', zero_division=0))
+        rec = float(recall_score(yt, yb, average='micro', zero_division=0))
+        pre = float(precision_score(yt, yb, average='micro', zero_division=0))
+        return {"f1": f1, "recall": rec, "precision": pre}
+
+    # ---------- GLOBAL ----------
+    print("\n🟢 BLOCK 1: GLOBAL METRICS")
+
+    glob_acc = _accuracy_pack(y_true, y_pred_bin)
+    glob_prf = _prf_pack(y_true, y_pred_bin)
+    glob_auc = _safe_auc(y_true, y_pred_prob)
+    glob_ap  = _safe_ap(y_true, y_pred_prob)
+    glob_ll  = _safe_logloss(y_true, y_pred_prob)
+
+    print("\n🔹 Accuracy Metrics:")
+    print(f"Non-zero accuracy per sample:  {glob_acc['non_zero_sample']:.4f}")
+    print(f"Non-zero accuracy per label:   {glob_acc['non_zero_label']:.4f}")
+    print(f"Strict accuracy:               {glob_acc['strict']:.4f}")
+    print(f"General accuracy (sklearn):    {glob_acc['general']:.4f}")
+    print(f\"Keras-like\" accuracy:         {glob_acc['keras_like']:.4f}")
+    print(f"Hamming accuracy:              {glob_acc['hamming_acc']:.4f}")
+
+    print("\n🔹 Other Metrics:")
+    print(f"F1-Score:                      {glob_prf['f1']:.4f}")
+    print(f"Precision:                     {glob_prf['precision']:.4f}")
+    print(f"Recall:                        {glob_prf['recall']:.4f}")
+    print(f"ROC-AUC (micro):               {glob_auc:.4f}")
+    print(f"Average Precision (micro):     {glob_ap:.4f}")
+    print(f"Log Loss:                      {glob_ll:.4f}")
+
+    # ---------- PER-GROUP ----------
+    print("\n----------------------------------")
+    print("🟢 BLOCK 2: PER-MATERIAL METRICS")
+
+    def _block(name: str, idx: list):
         if not idx:
-            print(f"\n{name}: (sin clases)")
+            print(f"\n{name.upper()}: (no classes / empty indices)")
             return
         yt = y_true[:, idx]
         yp = y_pred_prob[:, idx]
         yb = y_pred_bin[:, idx]
-        try:
-            auc = roc_auc_score(yt, yp, average='micro')
-        except ValueError:
-            auc = float('nan')
-        f1b = f1_score(yt, yb, average='micro', zero_division=0)
-        rb  = recall_score(yt, yb, average='micro', zero_division=0)
-        pb  = precision_score(yt, yb, average='micro', zero_division=0)
-        try:
-            llb = log_loss(yt, yp)
-        except ValueError:
-            llb = float('nan')
-        print(f"\n🔸 {name}: F1={f1b:.4f}  Prec={pb:.4f}  Rec={rb:.4f}  AUC={auc:.4f}  LogLoss={llb:.4f}")
 
-    block("Pigments", pigment_idx)
-    block("Binders",  binder_idx)
-    block("Mixtures", mixture_idx)
+        acc = _accuracy_pack(yt, yb)
+        prf = _prf_pack(yt, yb)
+        auc = _safe_auc(yt, yp)
+        ll  = _safe_logloss(yt, yp)
+
+        print(f"\n🔸 {name.upper()} Accuracy Metrics:")
+        print(f"Non-zero accuracy per sample:  {acc['non_zero_sample']:.4f}")
+        print(f"Non-zero accuracy per label:   {acc['non_zero_label']:.4f}")
+        print(f"Strict accuracy:               {acc['strict']:.4f}")
+        print(f"General accuracy (sklearn):    {acc['general']:.4f}")
+        print(f\"Keras-like\" accuracy:         {acc['keras_like']:.4f}")
+        print(f"Hamming accuracy:              {acc['hamming_acc']:.4f}")
+
+        print("\n🔹 Other Metrics:")
+        print(f"F1 Score:                      {prf['f1']:.4f}")
+        print(f"Precision:                     {prf['precision']:.4f}")
+        print(f"Recall:                        {prf['recall']:.4f}")
+        print(f"ROC-AUC (micro):               {auc:.4f}")
+        print(f"Log Loss:                      {ll:.4f}")
+
+    _block("Pigments", pigment_idx)
+    _block("Binders",  binder_idx)
+    _block("Mixtures", mixture_idx)
