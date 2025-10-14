@@ -95,7 +95,7 @@ python train.py --models cnn_baseline,cnn_residual,cnn_dilated --reports
 # reattach: screen -r hsi
 ```
 
-**With log / explicit RUN_ID**
+**With log in a Screen / explicit RUN_ID**
 ```bash
 conda activate hsi
 cd ~/projects/HSI
@@ -103,9 +103,23 @@ export RID=$(date +%Y%m%d-%H%M%S)
 python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epochs 60 --reports --run-id "$RID"
 ```
 
+## Run with job_python ()
+cd ~/projects/HSI
+qsub -v MODELS="cnn_baseline,cnn_residual,cnn_dilated",TRIALS=40,EPOCHS=60,N_JOBS_MODELS=3,OPTUNA_N_JOBS=4 job_hsi_train.pbs
+
+
 ## Save to Git
+cd ~/projects/HSI
+git status
+git init
+git add -A
+git commit -m "Initial commit"
+git branch -M main
+git push -u origin main
 
-
+## Save to Git from remote SSH
+git remote add origin git@github.com:pgimenez/HSI.git
+git push -u origin main
 
 ## Troubleshooting
 
