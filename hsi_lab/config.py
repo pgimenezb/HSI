@@ -48,4 +48,10 @@ variables = {
     "seed": 42,
     "models_dir": "outputs/saved_models",
     "outputs_dir": "outputs/other_outputs",
+
+    "model_list": ["cnn","dnn"],     
+    "trials": 50,
+    "epochs": 50,
+    "optuna_n_jobs": 4,         
+    "n_jobs_models": 1,         
 }

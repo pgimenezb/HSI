@@ -34,6 +34,8 @@ import matplotlib.patches as patches
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from numpy.random import default_rng
 from IPython import get_ipython
+import hashlib, pickle
+from pathlib import Path
 
 class HSIDataProcessor:
 
@@ -836,3 +838,24 @@ class HSIDataProcessor:
 
             return df_pca
 
+    def _stable_hash(obj) -> str:
+        s = json.dumps(obj, sort_keys=True, default=str).encode()
+        return hashlib.md5(s).hexdigest()
+
+    def dataframe_cached(self, cache_dir="outputs/cache"):
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        key = _stable_hash({
+            "variables": self.variables,
+            "files": sorted(list(self.all_data.keys())),
+        })
+        pkl = Path(cache_dir) / f"df_{key}.pkl"
+        if pkl.exists():
+            with open(pkl, "rb") as f:
+                return pickle.load(f)
+        df = self.dataframe()
+        with open(pkl, "wb") as f:
+            pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
+        return df
+
+    # inyecta el método en la clase
+    HSIDataProcessor.dataframe_cached = dataframe_cached

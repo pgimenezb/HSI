@@ -71,60 +71,59 @@ def build_cnn(input_len: int, num_classes: int, trial: optuna.trial.Trial) -> tf
 
 
 def tune_and_train(
-    X_train,
-    y_train,
-    X_val,
-    y_val,
-    input_len: int,
-    num_classes: int,
-    trials: int = 30,
-    epochs: int = 50,
+    X_train, y_train, X_val, y_val,
+    input_len: int, num_classes: int,
+    trials: int = 30, epochs: int = 50,
+    storage: str = None, study_name: str = None, n_jobs: int = 1,
     **kwargs,
 ):
+    import time, os
     seed = int(kwargs.get("seed", 42))
     _set_seeds(seed)
 
     batch_choices = kwargs.get("batch_choices", [32, 64, 128])
     patience = int(kwargs.get("patience", 5))
 
-    # (Opcional) configurar storage para poder reanudar estudios
-    storage = f"sqlite:///{os.path.abspath('optuna.db')}"
-    study = optuna.create_study(direction="maximize",
-                                study_name=f"study_{time.strftime('%Y%m%d-%H%M%S')}",
-                                storage=storage, load_if_exists=True)
+    if storage is None:
+        storage = f"sqlite:///{os.path.abspath('outputs/optuna.db')}"
+    if study_name is None:
+        study_name = f"cnn_{time.strftime('%Y%m%d')}"
+
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=True,
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5),
+        sampler=optuna.samplers.TPESampler(seed=seed),
+    )
 
     def objective(trial: optuna.trial.Trial):
-        _set_seeds(seed)  # por si alguna lib crea grafo/estado interno
+        _set_seeds(seed)
         model = build_cnn(input_len, num_classes, trial)
         hist = model.fit(
-            X_train,
-            y_train,
+            X_train, y_train,
             validation_data=(X_val, y_val),
             epochs=epochs,
             batch_size=trial.suggest_categorical("batch_size", batch_choices),
             verbose=0,
-            callbacks=[
-                EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True)
-            ],
+            callbacks=[EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True)],
         )
-        # usar la última val_strict_accuracy como objetivo
         return float(hist.history["val_strict_accuracy"][-1])
 
-    study.optimize(objective, n_trials=trials)
+    study.optimize(objective, n_trials=trials, n_jobs=n_jobs)
 
-    # Entrenar de nuevo con los mejores hiperparámetros
     best = study.best_trial.params
     fixed = optuna.trial.FixedTrial(best)
     model = build_cnn(input_len, num_classes, fixed)
-
     model.fit(
-        X_train,
-        y_train,
+        X_train, y_train,
         validation_data=(X_val, y_val),
         epochs=epochs,
         batch_size=best.get("batch_size", 64),
         verbose=1,
         callbacks=[EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True)],
     )
-
     return model, study, best
+
+
