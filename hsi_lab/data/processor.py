@@ -8,9 +8,9 @@ import pandas as pd
 import time
 import matplotlib.pyplot as plt
 from ipywidgets import interact, Dropdown, IntSlider
-from sklearn.metrics import mean_squared_error, mean_absolute_error, classification_report, confusion_matrix, ConfusionMatrixDisplay, accuracy_score, confusion_matrix, roc_auc_score, average_precision_score, log_loss, make_scorer, precision_score, recall_score, f1_score, hamming_loss 
+from sklearn.metrics import mean_squared_error, mean_absolute_error, classification_report, confusion_matrix, ConfusionMatrixDisplay, accuracy_score, roc_auc_score, average_precision_score, log_loss, make_scorer, precision_score, recall_score, f1_score, hamming_loss
 from sklearn.decomposition import PCA
-import random 
+import random
 from collections import defaultdict
 import tensorflow as tf
 import optuna
@@ -25,7 +25,7 @@ from sklearn.model_selection import KFold
 from tensorflow.keras.regularizers import l2
 import lightgbm as lgb
 from sklearn.multioutput import MultiOutputClassifier
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit, cross_val_score 
+from sklearn.model_selection import StratifiedShuffleSplit, cross_val_score
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from skmultilearn.model_selection import iterative_train_test_split
@@ -34,10 +34,10 @@ import matplotlib.patches as patches
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from numpy.random import default_rng
 from IPython import get_ipython
-import hashlib, pickle
 from pathlib import Path
 import pickle
 import hashlib
+
 def _to_jsonable(obj):
     if isinstance(obj, dict):
         return {str(k): _to_jsonable(v) for k, v in obj.items()}
@@ -59,7 +59,7 @@ def _to_jsonable(obj):
 def _stable_hash(payload) -> str:
     data = _to_jsonable(payload)
     raw = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha1(raw).hexdigest()  # corto y suficiente para cache keys
+    return hashlib.sha1(raw).hexdigest()  # clave corta y estable para caché
 
 class HSIDataProcessor:
 
@@ -68,17 +68,20 @@ class HSIDataProcessor:
     def __init__(self, variables):
         self.set_global_seed()
 
-        self.data_folder = variables['data_folder']   # cadena fija
-        self.excel_file  = variables['excel_file']    # cadena fija
+        self.data_folder = variables['data_folder']
+        self.excel_file  = variables['excel_file']
         self.file_names = pd.read_csv(self.excel_file) if self.excel_file else None
         print(f"active data_folder: {self.data_folder}")
         print(f"active excel_file: {self.excel_file}")
+
         self.all_data = {}
         self.loaded_files_range = (0, 0)
         self.binary_representations = {}
         self.Pigment_nom = None
+
         self.start_index = variables['start_index']
         self.num_files = variables['num_files']
+
         self.selected_regions = variables['selected_regions']
         self.selected_subregions = variables['selected_subregions']
         self.region_conditions = {
@@ -100,30 +103,31 @@ class HSIDataProcessor:
         self.num_mixture = variables['num_mixture']
         self.binder_columns = variables['binder_columns']
         self.mixture_columns = variables['mixture_columns']
-        self.all_pigment_columns = pd.read_csv(self.excel_file)['Title'].tolist()
+        self.all_pigment_columns = pd.read_csv(self.excel_file)['Title'].tolist() if self.excel_file else []
         self.meta_label_map = variables['meta_label_map']
         self.binder_mapping = variables['binder_mapping']
         self.mixture_mapping = variables['mixture_mapping']
         self.pigments_mapping = {}
         self._multi_to_label = None
+
+        # copia jsonable de variables para hashing estable
         self.variables = variables.copy()
         self.variables["binder_columns"]  = {int(k): v for k, v in self.variables.get("binder_columns", {}).items()}
         self.variables["mixture_columns"] = {int(k): v for k, v in self.variables.get("mixture_columns", {}).items()}
         self.binder_columns  = self.variables["binder_columns"]
         self.mixture_columns = self.variables["mixture_columns"]
+
         self._df_cache = None
 
-
     def set_global_seed(self):
-        seed = self.SEED  # Use the class's internal seed
-        os.environ['PYTHONHASHSEED'] = str(seed)  # Fix randomness in internal operations
-        random.seed(seed)                         # Python random
-        np.random.seed(seed)                      # Numpy
-        tf.random.set_seed(seed)                  # TensorFlow
+        seed = self.SEED
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        tf.random.set_seed(seed)
 
-
-# LOADING .H5 FILES AND FILTERING DATA BASED ON SELECTED PIGMENTS
-    def load_h5_files(self): 
+    # LOADING .H5 FILES AND FILTERING DATA BASED ON SELECTED PIGMENTS
+    def load_h5_files(self):
         self.loaded_files_range = (self.start_index, self.start_index + self.num_files)
         self.all_data = {}
 
@@ -151,7 +155,7 @@ class HSIDataProcessor:
                 print(f"Error loading {fichier}: {e}")
 
         # Keep in file_names only those we actually loaded
-        self.file_names = self.file_names[self.file_names['Title'].isin(self.all_data.keys())] 
+        self.file_names = self.file_names[self.file_names['Title'].isin(self.all_data.keys())]
 
         print(f"{len(self.all_data)} loaded files.")
         if self.all_data:
@@ -177,12 +181,10 @@ class HSIDataProcessor:
 
         multilabel_rows = []
 
-        # --- 20 pigmentos fijos delante ---
-        NUM_PIGMENTS = int(getattr(self, "num_pigments", 20))
+        # --- 20 pigmentos fijos delante (usa num_files de config por defecto) ---
+        NUM_PIGMENTS = int(getattr(self, "num_files", 20))
 
-        # --- Mappings que defines en self ---
-        # binder_mapping:  {"10": "Arabic Gum", "01": "Egg Tempera"}
-        # mixture_mapping: {"1000": "Pure", "0100": "...", "0010": "...", "0001": "..."}
+        # --- Mappings ---
         if not getattr(self, "binder_mapping", None):
             raise ValueError("self.binder_mapping vacío o no definido")
         if not getattr(self, "mixture_mapping", None):
@@ -192,9 +194,6 @@ class HSIDataProcessor:
         binder_len = len(binder_bits[0])
         if not all(len(b) == binder_len for b in binder_bits):
             raise ValueError("Todos los bitstrings de binder deben tener la misma longitud")
-        if binder_len != 2:
-            # si un día cambias a 3 binders (len 3) esto seguirá funcionando; no es obligatorio que sea 2
-            pass
 
         mixture_bits = list(self.mixture_mapping.keys())
         mixture_len = len(mixture_bits[0])
@@ -207,17 +206,16 @@ class HSIDataProcessor:
         TOTAL_LEN   = NUM_PIGMENTS + binder_len + mixture_len
 
         # nombre -> offset dentro de su bloque (0-based), derivado del bit '1'
-        binder_pos_by_name = {name: _first_one_idx(bits) for bits, name in self.binder_mapping.items()}
+        binder_pos_by_name  = {name: _first_one_idx(bits) for bits, name in self.binder_mapping.items()}
         mixture_pos_by_name = {name: _first_one_idx(bits) for bits, name in self.mixture_mapping.items()}
 
-        # Orden de mixtures por posición del '1' (1000,0100,0010,0001)
+        # Orden de mixtures por posición del '1'
         mixture_names_ordered = [
             self.mixture_mapping[bits]
             for bits in sorted(self.mixture_mapping.keys(), key=_first_one_idx)
         ]
 
         # Para traducir número->nombre (viene del binder_map)
-        # self.num_binder p.ej. {"Arabic Gum":1, "Egg Tempera":2}
         num_binder = getattr(self, "num_binder", {})
         inv_num_binder = {v: k for k, v in num_binder.items()}
         num_mixture = getattr(self, "num_mixture", {})
@@ -233,7 +231,7 @@ class HSIDataProcessor:
             data = h5_file.filtered_labels["labels/vector_multilabel"]  # (H, W, D_in)
             H, W, D_in = data.shape
 
-            # Solo usamos binder_map para forzar binder
+            # binder/mixture maps
             try:
                 binder_map  = h5_file.filtered_labels["labels/labels_binder"]
                 mixture_map = h5_file.filtered_labels["labels/labels_mixture"]
@@ -275,12 +273,12 @@ class HSIDataProcessor:
             for y, x in zip(ys, xs):
                 v = data[y, x, :]
 
-                # 1) Pigmento (0..19 en el tensor de entrada)
+                # 1) Pigmento
                 if not np.any(v[:NUM_PIGMENTS]):
                     continue
                 pigment_idx = int(np.argmax(v[:NUM_PIGMENTS]))
 
-                # 2) Binder forzado por binder_map (o all-ones -> Arabic Gum)
+                # 2) Binder forzado
                 if binder_all_ones:
                     forced_binder_name = "Arabic Gum"
                     bnum_px = num_binder.get("Arabic Gum", 1)
@@ -292,11 +290,10 @@ class HSIDataProcessor:
                         if bnum_px > 0:
                             forced_binder_name = inv_num_binder.get(bnum_px, None)
                     if not forced_binder_name:
-                        # si no hay nombre, prioriza AG si existe en mapping
                         forced_binder_name = "Arabic Gum" if "Arabic Gum" in binder_pos_by_name else next(iter(binder_pos_by_name.keys()))
                         bnum_px = num_binder.get(forced_binder_name, 0)
 
-                # 3) Región/Subregión (metadatos, no afecta al vector)
+                # 3) Región/Subregión (metadatos)
                 region = 0
                 subregion = 0
                 if binder_map is not None and mixture_map is not None:
@@ -325,19 +322,14 @@ class HSIDataProcessor:
                     # Pigmento
                     full_vector[pigment_idx] = 1
 
-                    # Binder (2 bits, p. ej. AG=10, ET=01) — bloque justo detrás de pigmentos
-                    # Primero limpia ambos bits (ya están en cero), y activa el que corresponda
+                    # Binder (bits detrás de pigmentos)
                     b_off = binder_pos_by_name.get(forced_binder_name)
                     if b_off is None:
-                        # si el nombre no está, usa el primero disponible
+                        # fallback al primero disponible
                         forced_binder_name, b_off = next(iter(binder_pos_by_name.items()))
-                        # OJO: b_off aquí sería offset si vienes del dict en forma {name:offset}
-                        # el next iter(binder_pos_by_name.items()) devuelve (name, offset)
-                        # Corrige:
-                        # forced_binder_name, b_off = forced_binder_name, b_off
-                    full_vector[BINDER_BASE + b_off] = 1  # <-- aquí garantizamos 2 bits para binder
+                    full_vector[BINDER_BASE + b_off] = 1
 
-                    # Mixture (4 bits) — bloque a continuación del binder
+                    # Mixture (bits a continuación del binder)
                     m_off = mixture_pos_by_name[m_name]
                     full_vector[MIX_BASE + m_off] = 1
 
@@ -357,7 +349,7 @@ class HSIDataProcessor:
 
         df_multilabel = pd.DataFrame(multilabel_rows)
 
-        # ====== (tu bloque de cubos / Spectrum igual que ya tenías) ======
+        # ====== CUBOS / SPECTRUM ======
         def build_cube_df(cube_type):
             dfs = []
             for file_name, h5_file in self.all_data.items():
@@ -405,154 +397,146 @@ class HSIDataProcessor:
 
         return df_merged
 
-
-
-
     def plot_binder_mixture_panel(self, h5_file, pigment_index=None, fichier_name=None):
-            binder = h5_file.filtered_labels['labels/labels_binder']
-            mixture = h5_file.filtered_labels['labels/labels_mixture']
-            multilabel = h5_file.filtered_labels['labels/vector_multilabel']
+        binder = h5_file.filtered_labels['labels/labels_binder']
+        mixture = h5_file.filtered_labels['labels/labels_mixture']
+        multilabel = h5_file.filtered_labels['labels/vector_multilabel']
 
-            assert binder.shape == mixture.shape, "The dimensions of 'binder' and 'mixture' do not match."
-            height, width = binder.shape
+        assert binder.shape == mixture.shape, "The dimensions of 'binder' and 'mixture' do not match."
+        height, width = binder.shape
 
-            fig, ax = plt.subplots(figsize=(5, 5))
-            ax.set_xlim(0, width)
-            ax.set_ylim(0, height)
-            ax.invert_yaxis()
-            cmap = plt.get_cmap('tab20')
-            color_idx = 0
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.set_xlim(0, width)
+        ax.set_ylim(0, height)
+        ax.invert_yaxis()
+        cmap = plt.get_cmap('tab20')
+        color_idx = 0
 
-            # Binders
-            binder_ticks = []
-            binder_tick_labels = []
-            unique_binders = np.unique(binder)
-            for b in unique_binders:
-                if b == 0:
+        # Binders
+        binder_ticks = []
+        binder_tick_labels = []
+        unique_binders = np.unique(binder)
+        for b in unique_binders:
+            if b == 0:
+                continue
+            mask = (binder == b)
+            cols = np.any(mask, axis=0)
+            col_indices = np.where(cols)[0]
+            if col_indices.size == 0:
+                continue
+            x_min, x_max = col_indices[0], col_indices[-1] + 1
+            ax.add_patch(patches.Rectangle((x_min, 0), x_max - x_min, height,
+                                           facecolor=cmap(color_idx), alpha=0.2, edgecolor='none'))
+            center_x = (x_min + x_max) / 2
+            binder_ticks.append(center_x)
+            binder_tick_labels.append(list(self.num_binder.keys())[int(b) - 1])
+            color_idx += 1
+
+        # Mixtures
+        color_idx = 10
+        mixture_ticks = []
+        mixture_tick_labels = []
+        unique_mixture = np.unique(mixture)
+        for v in unique_mixture:
+            if v == 0:
+                continue
+            mask = (mixture == v)
+            rows = np.any(mask, axis=1)
+            row_indices = np.where(rows)[0]
+            if row_indices.size == 0:
+                continue
+            y_min, y_max = row_indices[0], row_indices[-1] + 1
+            ax.add_patch(patches.Rectangle((0, y_min), width, y_max - y_min,
+                                           facecolor=cmap(color_idx), alpha=0.2, edgecolor='none'))
+            center_y = (y_min + y_max) / 2
+            mixture_ticks.append(center_y)
+            mixture_tick_labels.append(list(self.num_mixture.keys())[int(v) - 1])
+            color_idx += 1
+
+        # Pigment overlay
+        if pigment_index is not None:
+            if pigment_index < multilabel.shape[2]:
+                pigment_layer = multilabel[:, :, pigment_index]
+                yx = np.argwhere(pigment_layer == 1)
+                for y, x in yx:
+                    ax.add_patch(patches.Rectangle((x, y), 1, 1,
+                                                   facecolor='red', edgecolor='black', linewidth=1.0))
+
+        ax.set_xticks(binder_ticks)
+        ax.set_xticklabels(binder_tick_labels, rotation=0)
+        ax.set_yticks(mixture_ticks)
+        ax.set_yticklabels(mixture_tick_labels)
+        title = f"Pigment {fichier_name[3:-3]}" if fichier_name else f"Pigment {pigment_index}" if pigment_index is not None else "Binder & Mixture Panel"
+        ax.set_title(title)
+
+        # ➕ subregions
+        region_centers = {}
+        region_number = 1
+        for mixture_y, _ in zip(mixture_ticks, mixture_tick_labels):
+            for binder_x, _ in zip(binder_ticks, binder_tick_labels):
+                region_centers[region_number] = (binder_x, mixture_y)
+                if region_number in self.selected_regions:
+                    ax.text(binder_x, mixture_y, str(region_number),
+                            ha='center', va='center', fontsize=12,
+                            color='green', fontweight='bold')
+                else:
+                    ax.text(binder_x, mixture_y, str(region_number),
+                            ha='center', va='center', fontsize=8,
+                            color='black')
+                region_number += 1
+
+        rect_h = 15
+        rect_w = rect_h * 3
+        gap_x  = 4
+        gap_y  = 4
+
+        for region_num in self.selected_regions:
+            center = region_centers.get(region_num)
+            if not center:
+                continue
+            x_center, y_center = center
+
+            cx_left  = x_center - (gap_x/2 + rect_w/2)
+            cx_right = x_center + (gap_x/2 + rect_w/2)
+            cy_bottom = y_center - (gap_y/2 + rect_h/2)
+            cy_top    = y_center + (gap_y/2 + rect_h/2)
+
+            centers = {
+                1: (cx_left,  cy_bottom),
+                2: (cx_right, cy_bottom),
+                3: (cx_left,  cy_top),
+                4: (cx_right, cy_top),
+            }
+
+            for idx in (1, 2, 3, 4):
+                if idx not in self.selected_subregions:
                     continue
-                mask = (binder == b)
-                cols = np.any(mask, axis=0)
-                col_indices = np.where(cols)[0]
-                if col_indices.size == 0:
-                    continue
-                x_min, x_max = col_indices[0], col_indices[-1] + 1
-                ax.add_patch(patches.Rectangle((x_min, 0), x_max - x_min, height,
-                                            facecolor=cmap(color_idx), alpha=0.2, edgecolor='none'))
-                center_x = (x_min + x_max) / 2
-                binder_ticks.append(center_x)
-                binder_tick_labels.append(list(self.num_binder.keys())[int(b) - 1])
-                color_idx += 1
+                cx, cy = centers[idx]
+                x0 = cx - rect_w/2
+                y0 = cy - rect_h/2
 
-            # Mixtures
-            color_idx = 10
-            mixture_ticks = []
-            mixture_tick_labels = []
-            unique_mixture = np.unique(mixture)
-            for v in unique_mixture:
-                if v == 0:
-                    continue
-                mask = (mixture == v)
-                rows = np.any(mask, axis=1)
-                row_indices = np.where(rows)[0]
-                if row_indices.size == 0:
-                    continue
-                y_min, y_max = row_indices[0], row_indices[-1] + 1
-                ax.add_patch(patches.Rectangle((0, y_min), width, y_max - y_min,
-                                            facecolor=cmap(color_idx), alpha=0.2, edgecolor='none'))
-                center_y = (y_min + y_max) / 2
-                mixture_ticks.append(center_y)
-                mixture_tick_labels.append(list(self.num_mixture.keys())[int(v) - 1])
-                color_idx += 1
+                ax.add_patch(patches.Rectangle(
+                    (x0, y0), rect_w, rect_h,
+                    edgecolor='grey', facecolor='none', linewidth=1.0, linestyle='-'
+                ))
+                ax.text(cx, cy, f"{idx}", ha='center', va='center', fontsize=6, color='grey')
 
-            # Pigment overlay
-            if pigment_index is not None:
-                if pigment_index < multilabel.shape[2]:  
-                    pigment_layer = multilabel[:, :, pigment_index]
-                    yx = np.argwhere(pigment_layer == 1)
-                    for y, x in yx:
-                        ax.add_patch(patches.Rectangle((x, y), 1, 1,
-                                                    facecolor='red', edgecolor='black', linewidth=1.0))
-
-            ax.set_xticks(binder_ticks)
-            ax.set_xticklabels(binder_tick_labels, rotation=0)
-            ax.set_yticks(mixture_ticks)
-            ax.set_yticklabels(mixture_tick_labels)
-            title = f"Pigment {fichier_name[3:-3]}" if fichier_name else f"Pigment {pigment_index}" if pigment_index is not None else "Binder & Mixture Panel"
-            ax.set_title(title)
-
-
-            # ➕ subregions
-            region_centers = {}  
-            region_number = 1
-            for mixture_y, _ in zip(mixture_ticks, mixture_tick_labels):
-                for binder_x, _ in zip(binder_ticks, binder_tick_labels):
-                    region_centers[region_number] = (binder_x, mixture_y)  # center
-                    if region_number in self.selected_regions:
-                        ax.text(binder_x, mixture_y, str(region_number),
-                                ha='center', va='center', fontsize=12,
-                                color='green', fontweight='bold')
-                    else:
-                        ax.text(binder_x, mixture_y, str(region_number),
-                                ha='center', va='center', fontsize=8,
-                                color='black')
-                    region_number += 1
-
-
-            rect_h = 15                # height
-            rect_w = rect_h * 3        # width (x3)
-            gap_x  = 4                 # gap between columns
-            gap_y  = 4                 # gap between rows
-
-            for region_num in self.selected_regions:
-                center = region_centers.get(region_num)
-                if not center:
-                    continue
-                x_center, y_center = center
-
-                # centers of each sub-rect, centered relative to the region center
-                cx_left  = x_center - (gap_x/2 + rect_w/2)
-                cx_right = x_center + (gap_x/2 + rect_w/2)
-                cy_bottom = y_center - (gap_y/2 + rect_h/2)   # ↓ lower half
-                cy_top    = y_center + (gap_y/2 + rect_h/2)   # ↑ upper half
-
-                centers = {
-                    1: (cx_left,  cy_bottom),
-                    2: (cx_right, cy_bottom),
-                    3: (cx_left,  cy_top),
-                    4: (cx_right, cy_top),
-                }
-
-                for idx in (1, 2, 3, 4):
-                    if idx not in self.selected_subregions:
-                        continue
-                    cx, cy = centers[idx]
-                    x0 = cx - rect_w/2
-                    y0 = cy - rect_h/2
-
-                    ax.add_patch(patches.Rectangle(
-                        (x0, y0), rect_w, rect_h,
-                        edgecolor='grey', facecolor='none', linewidth=1.0, linestyle='-'
-                    ))
-                    ax.text(cx, cy, f"{idx}", ha='center', va='center', fontsize=6, color='grey')
-
-
-            plt.tight_layout()
-            plt.show()
-
+        plt.tight_layout()
+        plt.show()
 
     def all_data_interactive(self):
         # Visible options
         data_types = ['VIS+SWIR', 'vis', 'swir', 'Maxrf', 'lis 655', 'lis 365']
         default_type = self.data_type if isinstance(self.data_type, str) and self.data_type in data_types else 'VIS+SWIR'
 
-        # Calibration (adjust if your sensors use other values)
+        # Calibration
         VIS_START, VIS_END, VIS_N = 395.3, 1019.61, 785
         SWIR_START, SWIR_END, SWIR_N = 1098.03, 2577.88, 225
         VIS_STEP  = (VIS_END  - VIS_START)  / (VIS_N  - 1)
         SWIR_STEP = (SWIR_END - SWIR_START) / (SWIR_N - 1)
 
         def wl_for(kind: str, n_ch: int):
-            if kind == 'vis':   
+            if kind == 'vis':
                 return VIS_START + np.arange(n_ch, dtype=float) * VIS_STEP
             if kind == 'swir':
                 return SWIR_START + np.arange(n_ch, dtype=float) * SWIR_STEP
@@ -572,7 +556,6 @@ class HSIDataProcessor:
         def plot_for_file(fichier_name, Data_type, Channel):
             My_file = self.all_data[fichier_name]
 
-            # image index
             spectrum_num = int(
                 self.dataframe()[self.dataframe()['File'] == fichier_name]['Spectrum'].values[0].split('_')[1]
             ) - 1
@@ -582,7 +565,7 @@ class HSIDataProcessor:
             display_name  = 'vis' if Data_type.lower() == 'vis' else Data_type
 
             try:
-                # --- Build cube + X axis ---
+                # Build cube + X axis
                 if Data_type == 'VIS+SWIR':
                     if 'vis' not in My_file or 'swir' not in My_file:
                         raise KeyError("Missing 'vis' and/or 'swir' groups in the HDF5 for VIS+SWIR.")
@@ -606,32 +589,23 @@ class HSIDataProcessor:
                     wavelengths = wl_for(Data_type, data.shape[2])
                     xticks_pos, xticks_labels = nice_ticks(wavelengths, Data_type.upper(), k=10)
 
-                # safety: equal lengths
                 if wavelengths.shape[0] != data.shape[2]:
                     wavelengths = np.arange(data.shape[2], dtype=float)
                     xticks_pos, xticks_labels = nice_ticks(wavelengths, 'CH', k=10)
 
-                # extra labels
                 labels_mixture = My_file['labels']['labels_mixture'][:, :94]
                 labels_binder  = My_file['labels']['labels_binder'][:, :94]
 
-                # clamp image index
                 spectrum_num = max(0, min(spectrum_num, data.shape[2] - 1))
 
-                # --- FIGURE 1×5 ---
-                fig, axes = plt.subplots(
-                    1, 5, figsize=(26, 6),  # wider for 5 panels
-                    constrained_layout=True
-                )
+                fig, axes = plt.subplots(1, 5, figsize=(26, 6), constrained_layout=True)
                 ax_img, ax_vis, ax_swir, ax_bind, ax_varn = axes
 
                 labels_pts = [f'P{i+1}' for i in range(len(self.points))]
 
-                # Spectral image
                 ax_img.imshow(data[:, :, spectrum_num])
                 ax_img.set_title(f'{display_name.upper()} Data')
 
-                # --- VIS spectra ---
                 if 'vis' in My_file:
                     for i, (x, y) in enumerate(self.points):
                         spectrum = data_vis[x, y].astype(float)
@@ -640,11 +614,9 @@ class HSIDataProcessor:
                         po = min(polyorder, wl - 1)
                         spectrum = savgol_filter(spectrum, wl, po)
                         ax_vis.plot(wl_vis, spectrum, label=f'{labels_pts[i]} ({x},{y})')
-
                     ax_vis.set_title("VIS (395–1019 nm)")
                     ax_vis.set(xlabel="Wavelength (nm)", ylabel="Reflectance (%)")
 
-                # --- SWIR spectra ---
                 if 'swir' in My_file:
                     for i, (x, y) in enumerate(self.points):
                         spectrum = data_swir[x, y].astype(float)
@@ -653,256 +625,218 @@ class HSIDataProcessor:
                         po = min(polyorder, wl - 1)
                         spectrum = savgol_filter(spectrum, wl, po)
                         ax_swir.plot(wl_swir, spectrum, label=f'{labels_pts[i]} ({x},{y})')
-
                     ax_swir.set_title("SWIR (1098–2577 nm)")
                     ax_swir.set(xlabel="Wavelength (nm)")
 
-                # Maps
                 ax_bind.imshow(labels_binder);  ax_bind.set_title('Binders')
                 ax_varn.imshow(labels_mixture); ax_varn.set_title('Mixtures')
 
-                # Points over the maps and image
                 for i, (x, y) in enumerate(self.points):
                     for ax in (ax_img, ax_bind, ax_varn):
                         ax.scatter(x, y, color='red')
                         ax.text(x, y - 3, labels_pts[i], color='black', fontsize=12,
                                 ha='center', va='center')
 
-                # Legend (below the SWIR subplot)
                 handles, lbls = ax_swir.get_legend_handles_labels()
-                leg = ax_swir.legend(
-                    handles, lbls,
-                    loc='upper center',
-                    bbox_to_anchor=(0.5, -0.35),
-                    ncol=3,
-                    title="Spectra",
-                    frameon=False,
-                    bbox_transform=ax_swir.transAxes
-                )
+                ax_swir.legend(handles, lbls, loc='upper center',
+                               bbox_to_anchor=(0.5, -0.35), ncol=3,
+                               title="Spectra", frameon=False,
+                               bbox_transform=ax_swir.transAxes)
 
                 plt.show()
-
 
             except KeyError as e:
                 print(f"Data error: {e}")
 
-
     def _get_wavelengths_and_labels(self, columns):
-            wavelengths = []
-            xticks_positions = []
-            xticks_labels = []
+        wavelengths = []
+        xticks_positions = []
+        xticks_labels = []
 
-            # ---- vis parameters ----
-            vis_start = 395.3
-            vis_end_original = 1019.61
-            vis_total_channels_original = 785
-            vis_step = (vis_end_original - vis_start) / (vis_total_channels_original - 1)
+        # vis
+        vis_start = 395.3
+        vis_end_original = 1019.61
+        vis_total_channels_original = 785
+        vis_step = (vis_end_original - vis_start) / (vis_total_channels_original - 1)
 
-            # ---- SWIR parameters ----
-            swir_start = 1098.03
-            swir_end_original = 2577.88
-            swir_total_channels_original = 225
-            swir_step = (swir_end_original - swir_start) / (swir_total_channels_original - 1)
+        # swir
+        swir_start = 1098.03
+        swir_end_original = 2577.88
+        swir_total_channels_original = 225
+        swir_step = (swir_end_original - swir_start) / (swir_total_channels_original - 1)
 
-            # ---- Extract columns ----
-            vis_columns = [col for col in columns if col.startswith('val_vis_')]
-            swir_columns = [col for col in columns if col.startswith('val_swir_')]
+        vis_columns = [col for col in columns if col.startswith('val_vis_')]
+        swir_columns = [col for col in columns if col.startswith('val_swir_')]
 
-            vis_channels = len(vis_columns)
-            swir_channels = len(swir_columns)
+        vis_channels = len(vis_columns)
+        swir_channels = len(swir_columns)
 
-            # ---- Ticks ----
-            ideal_num_ticks = 10
-            vis_ticks = np.linspace(0, vis_channels - 1, ideal_num_ticks).round().astype(int).tolist()
-            swir_ticks = np.linspace(0, swir_channels - 1, ideal_num_ticks).round().astype(int).tolist()
+        ideal_num_ticks = 10
+        vis_ticks = np.linspace(0, vis_channels - 1, ideal_num_ticks).round().astype(int).tolist()
+        swir_ticks = np.linspace(0, swir_channels - 1, ideal_num_ticks).round().astype(int).tolist()
 
-            # ---- Iterate over columns ----
-            for i, col in enumerate(columns):
-                if col.startswith('val_vis_'):
-                    vis_idx = vis_columns.index(col)
-                    channel = int(col.split('_')[-1])  # original channel
-                    wl = vis_start + channel * vis_step
-                    wavelengths.append(wl)
+        for i, col in enumerate(columns):
+            if col.startswith('val_vis_'):
+                vis_idx = vis_columns.index(col)
+                channel = int(col.split('_')[-1])
+                wl = vis_start + channel * vis_step
+                wavelengths.append(wl)
+                if vis_idx in vis_ticks:
+                    xticks_positions.append(i)
+                    xticks_labels.append(f"vis {channel} ({wl:.1f} nm)")
+            elif col.startswith('val_swir_'):
+                swir_idx = swir_columns.index(col)
+                channel = int(col.split('_')[-1])
+                wl = swir_start + channel * swir_step
+                wavelengths.append(wl)
+                if swir_idx in swir_ticks:
+                    xticks_positions.append(i)
+                    xticks_labels.append(f"SWIR {channel} ({wl:.1f} nm)")
 
-                    if vis_idx in vis_ticks:
-                        xticks_positions.append(i)
-                        xticks_labels.append(f"vis {channel} ({wl:.1f} nm)")
-
-                elif col.startswith('val_swir_'):
-                    swir_idx = swir_columns.index(col)
-                    channel = int(col.split('_')[-1])  # original channel
-                    wl = swir_start + channel * swir_step
-                    wavelengths.append(wl)
-
-                    if swir_idx in swir_ticks:
-                        xticks_positions.append(i)
-                        xticks_labels.append(f"SWIR {channel} ({wl:.1f} nm)")
-
-            return wavelengths, xticks_positions, xticks_labels
+        return wavelengths, xticks_positions, xticks_labels
 
     def compare_spectra(self, per_file=True, num_blocks=6):
-            df_merged = self.dataframe()
-            spectra_columns = [col for col in df_merged.columns if col.startswith('val_')]
+        df_merged = self.dataframe()
+        spectra_columns = [col for col in df_merged.columns if col.startswith('val_')]
 
-            wavelengths, xticks_pos, xticks_labels = self._get_wavelengths_and_labels(spectra_columns)
+        wavelengths, xticks_pos, xticks_labels = self._get_wavelengths_and_labels(spectra_columns)
 
-            if per_file:
-                for file in df_merged['File'].unique():
-                    df_file = df_merged[df_merged['File'] == file]
-                    spectra_array = df_file[spectra_columns].values
+        if per_file:
+            for file in df_merged['File'].unique():
+                df_file = df_merged[df_merged['File'] == file]
+                spectra_array = df_file[spectra_columns].values
 
-                    if len(spectra_array) < num_blocks:
-                        print(f"{file}: there are not enough files to divide into {num_blocks} blocks.")
-                        continue
+                if len(spectra_array) < num_blocks:
+                    print(f"{file}: there are not enough files to divide into {num_blocks} blocks.")
+                    continue
 
-                    block_size = len(spectra_array) // num_blocks
+                block_size = len(spectra_array) // num_blocks
 
-                    fig, ax = plt.subplots(figsize=(14, 6))
-
-                    for i in range(num_blocks):
-                        start = i * block_size
-                        end = (i + 1) * block_size if i < num_blocks - 1 else len(spectra_array)
-                        block = spectra_array[start:end]
-                        moy = np.mean(block, axis=0)
-                        min_ = np.min(block, axis=0)
-                        max_ = np.max(block, axis=0)
-                        ax.plot(wavelengths, moy, label=f"Spectrum {i+1}")
-                        ax.fill_between(wavelengths, min_, max_, alpha=0.2)
-
-                    ax.set_title(f"Spectra per block - {file}")
-                    ax.set_xlabel("Data type, channel, and wavelength (nm)")
-                    ax.set_ylabel("Reflectance (%)")
-                    ax.set_xticks([wavelengths[i] for i in xticks_pos])
-                    xticklabels = ax.set_xticklabels(xticks_labels, rotation=90, fontsize=8)
-
-                    # Force a draw to measure xticklabels
-                    fig.canvas.draw()
-                    renderer = fig.canvas.get_renderer()
-                    max_height = max([label.get_window_extent(renderer).height for label in xticklabels])
-                    fig_height = fig.get_size_inches()[1] * fig.dpi
-                    bottom_space = max_height / fig_height + 0.05  # extra margin
-
-                    # Adjust bottom margin
-                    fig.subplots_adjust(bottom=bottom_space)
-
-                    # Place legend just below
-                    # Move legend outside the axis
-                    fig.legend(loc='lower center', bbox_to_anchor=(0.5, -0.05), ncol=3)
-
-                    # Adjust layout
-                    fig.tight_layout(rect=[0, 0.1, 1, 1])  # leave space below (0.1)
-
-                    plt.show()
-
-            else:
                 fig, ax = plt.subplots(figsize=(14, 6))
 
-                for file in df_merged['File'].unique():
-                    df_file = df_merged[df_merged['File'] == file]
-                    spectra_array = df_file[spectra_columns].values
-                    if len(spectra_array) == 0:
-                        continue
-                    moy = np.mean(spectra_array, axis=0)
-                    min_ = np.min(spectra_array, axis=0)
-                    max_ = np.max(spectra_array, axis=0)
-                    ax.plot(wavelengths, moy, label=f"{file} (n={len(spectra_array)})")
+                for i in range(num_blocks):
+                    start = i * block_size
+                    end = (i + 1) * block_size if i < num_blocks - 1 else len(spectra_array)
+                    block = spectra_array[start:end]
+                    moy = np.mean(block, axis=0)
+                    min_ = np.min(block, axis=0)
+                    max_ = np.max(block, axis=0)
+                    ax.plot(wavelengths, moy, label=f"Spectrum {i+1}")
                     ax.fill_between(wavelengths, min_, max_, alpha=0.2)
 
-                ax.set_xlabel("Wavelength (nm)")
+                ax.set_title(f"Spectra per block - {file}")
+                ax.set_xlabel("Data type, channel, and wavelength (nm)")
                 ax.set_ylabel("Reflectance (%)")
-                ax.set_title("Average spectra per pigment")
                 ax.set_xticks([wavelengths[i] for i in xticks_pos])
                 xticklabels = ax.set_xticklabels(xticks_labels, rotation=90, fontsize=8)
 
-                # Force a draw to measure xticklabels
                 fig.canvas.draw()
                 renderer = fig.canvas.get_renderer()
                 max_height = max([label.get_window_extent(renderer).height for label in xticklabels])
                 fig_height = fig.get_size_inches()[1] * fig.dpi
-                bottom_space = max_height / fig_height + 0.05  # extra margin
+                bottom_space = max_height / fig_height + 0.05
 
-                # Adjust bottom margin
-                fig.subplots_adjust(left=0.12, bottom=bottom_space)
+                fig.subplots_adjust(bottom=bottom_space)
+                fig.legend(loc='lower center', bbox_to_anchor=(0.5, -0.05), ncol=3)
+                fig.tight_layout(rect=[0, 0.1, 1, 1])
 
-                # Place legend right below
-                ax.legend(loc='upper center', bbox_to_anchor=(0.5, -bottom_space / 2), ncol=3)
-
-                plt.tight_layout()
                 plt.show()
 
-    def PCA_analysis(self, df, n_components=4, titre="Principal Component Analysis"):
-            val_columns = [col for col in df.columns if col.startswith('val_')]
-            
-            if not val_columns:
-                print("There are no columns with 'val_'")
-                return None
+        else:
+            fig, ax = plt.subplots(figsize=(14, 6))
 
-            X = df[val_columns]
-            pca = PCA(n_components=n_components)
-            X_pca = pca.fit_transform(X)
+            for file in df_merged['File'].unique():
+                df_file = df_merged[df_merged['File'] == file]
+                spectra_array = df_file[spectra_columns].values
+                if len(spectra_array) == 0:
+                    continue
+                moy = np.mean(spectra_array, axis=0)
+                min_ = np.min(spectra_array, axis=0)
+                max_ = np.max(spectra_array, axis=0)
+                ax.plot(wavelengths, moy, label=f"{file} (n={len(spectra_array)})")
+                ax.fill_between(wavelengths, min_, max_, alpha=0.2)
 
-            # Create a DataFrame with principal components
-            df_pca = pd.DataFrame(X_pca, columns=[f'PC{i+1}' for i in range(n_components)])
-            df_pca['File'] = df['File'].values if 'File' in df.columns else range(len(df))
+            ax.set_xlabel("Wavelength (nm)")
+            ax.set_ylabel("Reflectance (%)")
+            ax.set_title("Average spectra per pigment")
+            ax.set_xticks([wavelengths[i] for i in xticks_pos])
+            xticklabels = ax.set_xticklabels(xticks_labels, rotation=90, fontsize=8)
 
-            # Plot
-            plt.figure(figsize=(10, 10))
-            cmap = plt.cm.get_cmap('tab20', len(df_pca['File'].unique()))
-            for i, fichier in enumerate(df_pca['File'].unique()):
-                subset = df_pca[df_pca['File'] == fichier]
-                plt.scatter(subset['PC1'], subset['PC2'], label=fichier, color=cmap(i % 20))
-            
-            plt.title(titre, fontweight='bold', fontsize=12)
-            plt.xlabel('PC1', fontweight='bold', fontsize=12)
-            plt.ylabel('PC2', fontweight='bold', fontsize=12)
-            plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), title="File", ncol=3)
-            plt.grid(True)
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+            max_height = max([label.get_window_extent(renderer).height for label in xticklabels])
+            fig_height = fig.get_size_inches()[1] * fig.dpi
+            bottom_space = max_height / fig_height + 0.05
+
+            fig.subplots_adjust(left=0.12, bottom=bottom_space)
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -bottom_space / 2), ncol=3)
+
             plt.tight_layout()
             plt.show()
 
-            return df_pca
+    def PCA_analysis(self, df, n_components=4, titre="Principal Component Analysis"):
+        val_columns = [col for col in df.columns if col.startswith('val_')]
 
-    def _stable_hash(obj) -> str:
-        s = json.dumps(obj, sort_keys=True, default=str).encode()
-        return hashlib.md5(s).hexdigest()
+        if not val_columns:
+            print("There are no columns with 'val_'")
+            return None
+
+        X = df[val_columns]
+        pca = PCA(n_components=n_components)
+        X_pca = pca.fit_transform(X)
+
+        df_pca = pd.DataFrame(X_pca, columns=[f'PC{i+1}' for i in range(n_components)])
+        df_pca['File'] = df['File'].values if 'File' in df.columns else range(len(df))
+
+        plt.figure(figsize=(10, 10))
+        cmap = plt.cm.get_cmap('tab20', len(df_pca['File'].unique()))
+        for i, fichier in enumerate(df_pca['File'].unique()):
+            subset = df_pca[df_pca['File'] == fichier]
+            plt.scatter(subset['PC1'], subset['PC2'], label=fichier, color=cmap(i % 20))
+
+        plt.title(titre, fontweight='bold', fontsize=12)
+        plt.xlabel('PC1', fontweight='bold', fontsize=12)
+        plt.ylabel('PC2', fontweight='bold', fontsize=12)
+        plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), title="File", ncol=3)
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+        return df_pca
 
     def dataframe_cached(self, cache_dir: str = "outputs/cache", force: bool = False):
+        """
+        Devuelve el DataFrame cacheado en memoria (self._df_cache) y, además,
+        cachea/recupera del disco usando una clave estable basada en variables+ficheros.
+        """
         # 1) caché en memoria
         if (not force) and (self._df_cache is not None):
             return self._df_cache
 
-        # 2) clave estable para el disco
+        # 2) caché en disco
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
         key = _stable_hash({
-            "variables": self.variables,                    # config actual
-            "files": sorted(list(self.all_data.keys())),    # ficheros cargados
+            "variables": self.variables,
+            "files": sorted(list(self.all_data.keys())),
         })
         pkl_path = Path(cache_dir) / f"df_{key}.pkl"
 
-        # 3) leer del disco si existe y no forzamos
         if (not force) and pkl_path.exists():
             try:
                 with open(pkl_path, "rb") as f:
                     df = pickle.load(f)
-                # guarda también en memoria
                 self._df_cache = df
                 return df
             except Exception as e:
-                # si falla la lectura, recomputamos
-                print(f"(info) Caché en disco corrupta, recomputando: {e}")
+                print(f"(info) caché en disco inválida, recomputo: {e}")
 
-        # 4) recomputar
+        # recomputar y guardar
         df = self.dataframe()
-
-        # 5) guardar en disco y memoria
         try:
             with open(pkl_path, "wb") as f:
                 pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as e:
-            print(f"(info) No se pudo escribir la caché en disco: {e}")
+            print(f"(info) no se pudo escribir caché en disco: {e}")
 
         self._df_cache = df
         return df
-
-    # inyecta el método en la clase
-    HSIDataProcessor.dataframe_cached = dataframe_cached
