@@ -1,70 +1,106 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import (
-    confusion_matrix, ConfusionMatrixDisplay, classification_report,
-    accuracy_score, hamming_loss, roc_auc_score, average_precision_score,
-    f1_score, recall_score, precision_score, log_loss
-)
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
-def plot_confusion_matrix_by_vector(df, y_pred_prob, y_true, threshold=0.5):
-    y_pred_bin = (y_pred_prob >= threshold).astype(int)
-    y_true_bin = y_true.astype(int)
+def plot_confusion_matrix_by_vector(
+    df,
+    y_pred_prob,
+    y_true,
+    threshold: float = 0.5,
+    save_path: str | None = None,
+    show: bool = False,
+):
+    # --- Binarización ---
+    y_pred_bin = (y_pred_prob >= float(threshold)).astype(int)
+    y_true_bin = (y_true.astype(int))
 
-    # Crea etiquetas legibles a partir de df["Multi"]
+    # --- Construcción de etiquetas legibles por vector ---
+    # Creamos un mapa: tuple(vector) -> "File, Binder, Mixture"
+    def _row_to_label(r):
+        file_ = r.get("File", "?")
+        binder = r.get("Binder", r.get("binder", "?"))
+        mixture = r.get("Mixture", r.get("mixture", "?"))
+        return f"{file_}, {binder}, {mixture}"
+
+    vec_to_label = {}
+    if "Multi" in df.columns:
+        for _, r in df.iterrows():
+            try:
+                key = tuple(r["Multi"])
+                if key not in vec_to_label:
+                    vec_to_label[key] = _row_to_label(r)
+            except Exception:
+                # por si hay filas sin 'Multi' válida
+                continue
+
+    # Función de ayuda: convierte vector -> etiqueta legible
     def vector_to_label(vec):
-        row = df[df['Multi'].apply(lambda x: tuple(x)==tuple(vec))]
-        if row.empty: return "Unknown"
-        r = row.iloc[0]
-        return f"{r.get('File','?')}, {r.get('Binder','?')}, {r.get('Mixture','?')}"
+        key = tuple(vec.tolist() if hasattr(vec, "tolist") else vec)
+        return vec_to_label.get(key, "Unknown")
 
+    # Construimos las secuencias de etiquetas (una por muestra)
     pred_labels = [vector_to_label(v) for v in y_pred_bin]
     true_labels = [vector_to_label(v) for v in y_true_bin]
 
-    labels = np.unique(true_labels)
-    cm = confusion_matrix(true_labels, pred_labels, labels=labels)
-    cm_pct = np.nan_to_num(cm.astype(float)/cm.sum(axis=1, keepdims=True))
+    # --- Clases presentes: usa el conjunto de labels verdaderos (orden estable) ---
+    # Para ordenar de forma estable, tomamos el orden de aparición en true_labels.
+    seen = {}
+    for lab in true_labels:
+        if lab not in seen:
+            seen[lab] = True
+    labels = np.array(list(seen.keys()), dtype=object)
+    if labels.size == 0:
+        # Fallback: si no hubo etiquetas válidas en true_labels, usa unión de ambos
+        labels = np.unique(true_labels + pred_labels)
 
-    fig_w = max(18, 0.6*len(labels))
-    fig_h = max(12, 0.6*len(labels))
+    # --- Matriz de confusión (conteos) ---
+    cm_counts = confusion_matrix(true_labels, pred_labels, labels=labels)
+
+    # --- Normalización por fila (porcentaje) ---
+    with np.errstate(divide="ignore", invalid="ignore"):
+        row_sums = cm_counts.sum(axis=1, keepdims=True)
+        cm_percent = cm_counts.astype(float) / np.maximum(row_sums, 1)
+        cm_percent = np.nan_to_num(cm_percent)
+
+    # --- Dibujo ---
+    n_labels = len(labels)
+    # tamaño dinámico (limita algo para no generar figuras gigantescas)
+    fig_w = max(10, min(0.6 * n_labels, 40))
+    fig_h = max(8,  min(0.6 * n_labels, 40))
+
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    ConfusionMatrixDisplay(cm_pct, display_labels=labels).plot(cmap=plt.cm.Blues, ax=ax)
-    ax.set_title("Confusion Matrix (pred vs true)")
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("True")
-    plt.xticks(rotation=90, ha='center'); plt.yticks(rotation=0, ha='right')
-    plt.subplots_adjust(left=0.30, bottom=0.1)
+    disp = ConfusionMatrixDisplay(cm_percent, display_labels=labels)
+    disp.plot(cmap=plt.cm.Blues, ax=ax, values_format=".2f", colorbar=True)
+
+    ax.set_title("Confusion Matrix (row-normalized: %)", fontsize=14)
+    ax.set_xlabel("Predicted", fontsize=12)
+    ax.set_ylabel("True", fontsize=12)
+
+    # Ejes legibles
+    plt.setp(ax.get_xticklabels(), rotation=90, ha="center", fontsize=9)
+    plt.setp(ax.get_yticklabels(), rotation=0,  ha="right",  fontsize=9)
+
+    # Márgenes y layout
+    plt.subplots_adjust(left=0.28, bottom=0.20, right=0.95, top=0.90)
     plt.tight_layout()
-    plt.show()
 
-def print_global_and_per_group_metrics(y_true, y_pred_prob, y_pred_bin,
-                                       pigment_idx, binder_idx, mixture_idx):
-    print("\n🟢 CLASSIFICATION REPORT")
-    print(classification_report(y_true, y_pred_bin, zero_division=0))
+    saved_to = None
+    if save_path:
+        try:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        except Exception:
+            pass
+        plt.savefig(save_path, dpi=130, bbox_inches="tight")
+        saved_to = save_path
 
-    roc_auc = roc_auc_score(y_true, y_pred_prob, average='micro')
-    avg_precision = average_precision_score(y_true, y_pred_prob, average='micro')
-    f1 = f1_score(y_true, y_pred_bin, average='micro', zero_division=0)
-    recall = recall_score(y_true, y_pred_bin, average='micro', zero_division=0)
-    precision = precision_score(y_true, y_pred_bin, average='micro', zero_division=0)
-    try: ll = log_loss(y_true, y_pred_prob)
-    except ValueError: ll = float('nan')
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
-    print("\n🔹 Global:")
-    print(f"F1={f1:.4f}  Precision={precision:.4f}  Recall={recall:.4f}  ROC-AUC={roc_auc:.4f}  AP={avg_precision:.4f}  LogLoss={ll:.4f}")
-
-    def block(name, idx):
-        if not idx: 
-            print(f"\n{name}: (sin clases)"); return
-        yt = y_true[:, idx]; yb = y_pred_bin[:, idx]; yp = y_pred_prob[:, idx]
-        try: auc = roc_auc_score(yt, yp, average='micro')
-        except ValueError: auc = float('nan')
-        f1b = f1_score(yt, yb, average='micro', zero_division=0)
-        rb  = recall_score(yt, yb, average='micro', zero_division=0)
-        pb  = precision_score(yt, yb, average='micro', zero_division=0)
-        try: llb = log_loss(yt, yp)
-        except ValueError: llb = float('nan')
-        print(f"\n🔸 {name}: F1={f1b:.4f}  Prec={pb:.4f}  Rec={rb:.4f}  AUC={auc:.4f}  LogLoss={llb:.4f}")
-
-    block("Pigments", pigment_idx)
-    block("Binders",  binder_idx)
-    block("Mixtures", mixture_idx)
+    return {
+        "labels": labels,
+        "cm_counts": cm_counts,
+        "cm_percent": cm_percent,
+        "saved_to": saved_to,
+    }

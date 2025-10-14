@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from joblib import Parallel, delayed
 from sklearn.model_selection import train_test_split
 import h5py
-
+from datetime import datetime
 from hsi_lab.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval.report import (
@@ -96,6 +96,7 @@ def _parse_args():
     p.add_argument("--epochs", type=int, default=None, help="Epochs (override)")
     p.add_argument("--optuna-n-jobs", type=int, default=None, help="Paralelismo interno de Optuna")
     p.add_argument("--n-jobs-models", type=int, default=None, help="Paralelismo entre modelos (Joblib)")
+    p.add_argument("--reports", action="store_true", help="Generar y guardar figuras/CM aunque haya varios modelos")
     return p.parse_args()
 
 def _resolve_list(value_from_cli: str, value_from_env: str, value_from_cfg):
@@ -124,7 +125,7 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
     tune = getattr(mod, "tune_and_train")
 
     # cada modelo reanuda su propio estudio en la misma DB
-    study_name = f"{model_name}_study"
+    study_name = f"{model_name}_study_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     model, study, best = tune(
         X_train, y_train, X_val, y_val,
         input_len=X_train.shape[1], num_classes=y.shape[1],
@@ -157,8 +158,7 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
         try:
             plot_confusion_matrix_by_vector(df, y_pred_prob, y_test)
             fig_path = os.path.join(cfg["outputs_dir"], "figures", f"{model_name}_confusion_matrix.png")
-            plt.savefig(fig_path, dpi=130, bbox_inches="tight")
-            plt.close()
+            plot_confusion_matrix_by_vector(df, y_pred_prob, y_test, save_path=fig_path, show=False)
             print("✅ Guardada figura:", fig_path)
         except Exception as e:
             print("(info) No se pudo dibujar/guardar la matriz de confusión:", e)
@@ -212,7 +212,7 @@ def main():
 
     # si hay varios, los ejecutamos (en serie o en paralelo) con la MISMA partición
     results = Parallel(n_jobs=n_jobs_models)(
-        delayed(run_one_model)(m, df, cfg, trials, epochs, optuna_n_jobs, do_reports=False)
+        delayed(run_one_model)(m, df, cfg, trials, epochs, optuna_n_jobs, do_reports=args.reports)
         for m in model_list
     )
 

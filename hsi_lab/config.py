@@ -3,12 +3,12 @@ variables = {
     "excel_file": "/home/pgimenez/database/noms_fichiers.csv",
     "data_type": ["vis", "swir"],
     "start_index": 0,
-    "num_files": 3,
+    "num_files": 4,
     "selected_regions": [1],
     "selected_subregions": [1],
     "savgol_window": 0,
     "savgol_polyorder": 0,
-    "num_regions": 4,
+    "num_regions": 1,
 
     "num_binder": {"Arabic Gum": 1, "Egg Tempera": 2},
     "num_mixture": {
@@ -49,7 +49,7 @@ variables = {
     "models_dir": "outputs/saved_models",
     "outputs_dir": "outputs/other_outputs",
 
-    "model_list": ["cnn","dnn"],     
+    "model_list": ["cnn_baseline","cnn_dilated","cnn_residual", "dnn_baseline","dnn_selu","dnn_wide"],     
     "trials": 50,
     "epochs": 50,
     "optuna_n_jobs": 4,         
