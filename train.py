@@ -96,7 +96,9 @@ def _parse_args():
     p.add_argument("--epochs", type=int, default=None, help="Epochs (override)")
     p.add_argument("--optuna-n-jobs", type=int, default=None, help="Paralelismo interno de Optuna")
     p.add_argument("--n-jobs-models", type=int, default=None, help="Paralelismo entre modelos (Joblib)")
-    p.add_argument("--reports", action="store_true", help="Generar y guardar figuras/CM aunque haya varios modelos")
+    p.add_argument("--reports", action="store_true", help="Guardar figuras/CM")
+    p.add_argument("--run-id", type=str, default=None, help="Identificador de la ejecución (carpeta)")
+
     return p.parse_args()
 
 def _resolve_list(value_from_cli: str, value_from_env: str, value_from_cfg):
@@ -185,8 +187,19 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
 # main
 # ---------------------------
 def main():
+    # === CONFIG + CLI/ENV ===
     cfg = variables.copy()
-    ensure_dirs(cfg)
+
+    # lee CLI/ENV y prepara RUN_ID (compartido por todos los modelos de este lanzamiento)
+    args = _parse_args()
+    from datetime import datetime
+    run_id = args.run_id or _os.getenv("HSI_RUN_ID") or datetime.now().strftime("%Y%m%d-%H%M%S")
+    cfg["run_id"] = run_id
+
+    # redirige outputs a subcarpetas por ejecución
+    cfg["outputs_dir"] = _os.path.join(cfg["outputs_dir"], "runs", run_id)
+    cfg["models_dir"]  = _os.path.join(cfg["models_dir"], run_id)
+    ensure_dirs(cfg)  # <- ahora crea esas carpetas
 
     # datos 1 vez
     processor = HSIDataProcessor(cfg)
@@ -194,14 +207,13 @@ def main():
     df = processor.dataframe()   # usa dataframe(); si tienes dataframe_cached(), cámbialo aquí
 
     # === Selección automática (CLI > ENV > config) ===
-    args = _parse_args()
     env_models = _os.getenv("HSI_MODELS", "")
     model_list = _resolve_list(args.models, env_models, cfg.get("model_list", ["cnn_baseline"]))
 
-    trials = args.trials if args.trials is not None else int(cfg.get("trials", 50))
-    epochs = args.epochs if args.epochs is not None else int(cfg.get("epochs", 50))
-    optuna_n_jobs = args.optuna_n_jobs if args.optuna_n_jobs is not None else int(cfg.get("optuna_n_jobs", 4))
-    n_jobs_models = args.n_jobs_models if args.n_jobs_models is not None else int(cfg.get("n_jobs_models", 1))
+    trials         = args.trials         if args.trials         is not None else int(cfg.get("trials", 50))
+    epochs         = args.epochs         if args.epochs         is not None else int(cfg.get("epochs", 50))
+    optuna_n_jobs  = args.optuna_n_jobs  if args.optuna_n_jobs  is not None else int(cfg.get("optuna_n_jobs", 4))
+    n_jobs_models  = args.n_jobs_models  if args.n_jobs_models  is not None else int(cfg.get("n_jobs_models", 1))
 
     # si solo hay uno, hacemos el flujo “completo” (con reportes)
     if len(model_list) == 1:
@@ -222,3 +234,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
