@@ -13,7 +13,8 @@ python -m hsi_lab.train --models cnn_baseline,dnn_wide,dnn_selu --trials 30 --ep
 python -m hsi_lab.train --models cnn_baseline --trials 40 --epochs 60 | tee outputs/other_outputs/cnn_baseline_$(date +%Y%m%d-%H%M%S).log
 
 4) Lanzarlo en background con screen:
-screen -S exp_cnn -dm bash -lc 'python -m hsi_lab.train --models cnn_baseline --trials 40 --epochs 60 | tee outputs/other_outputs/cnn_baseline_$(date +%Y%m%d-%H%M%S).log'
-screen -ls        # ver sesiones
-screen -r exp_cnn # entrar a la sesión
-# Ctrl+A, luego D para salir dejando el proceso corriendo
+screen -S hsi-inproc -dm bash -lc 'conda activate hsi && cd ~/projects/HSI && \
+python -m hsi_lab.train --models cnn_baseline,cnn_residual,dnn_wide \
+--trials 30 --epochs 50 --n-jobs-models 3 --optuna-n-jobs 1 --reports \
+| tee outputs/other_outputs/inproc_$(date +%Y%m%d-%H%M%S).log'
+
