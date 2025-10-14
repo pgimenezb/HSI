@@ -15,7 +15,7 @@ from hsi_lab.eval.report import (
     plot_confusion_matrix_by_vector,
 )
 
-OPTUNA_STORAGE = f"sqlite:///{os.path.abspath('outputs/optuna.db')}"
+OPTUNA_STORAGE = None
 
 # ------------- Tee de logs por modelo -------------
 class _TeeIO:
@@ -128,9 +128,8 @@ def _resolve_list(value_from_cli: str, value_from_env: str, value_from_cfg):
     return value_from_cfg
 
 # ------------- Core: ejecutar un modelo -------------
-def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
-                  trials: int, epochs: int, optuna_n_jobs: int,
-                  do_reports: bool = False):
+def run_one_model(model_name, df, cfg, trials, epochs, optuna_n_jobs,
+                  do_reports=False, optuna_storage=None):
 
     log_path = os.path.join(cfg["outputs_dir"], f"{model_name}.log")
     with tee_to_file(log_path):
@@ -152,7 +151,8 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
             X_train, y_train, X_val, y_val,
             input_len=X_train.shape[1], num_classes=y.shape[1],
             trials=trials, epochs=epochs,
-            storage=OPTUNA_STORAGE, study_name=study_name, n_jobs=optuna_n_jobs
+            storage=optuna_storage,  # <- aquí
+            study_name=study_name, n_jobs=optuna_n_jobs
         )
 
         # evaluación homogénea
@@ -216,6 +216,8 @@ def main():
     cfg["outputs_dir"] = _os.path.join(cfg["outputs_dir"], "runs", run_id)
     cfg["models_dir"]  = _os.path.join(cfg["models_dir"],  run_id)
     ensure_dirs(cfg)
+    global OPTUNA_STORAGE
+    OPTUNA_STORAGE = f"sqlite:///{os.path.abspath(os.path.join(cfg['outputs_dir'], 'optuna.db'))}"
 
     # datos 1 vez (usa caché si la tienes implementada)
     processor = HSIDataProcessor(cfg)
@@ -233,15 +235,15 @@ def main():
 
     # si solo hay uno, hacemos el flujo “completo” (con reportes)
     if len(model_list) == 1:
-        summary = run_one_model(model_list[0], df, cfg, trials, epochs, optuna_n_jobs, do_reports=True)
+        summary = run_one_model(..., optuna_storage=optuna_storage, do_reports=True)
         print("\n=== RESUMEN ===")
         print(f"- {summary['model']}: strict_acc_test={summary['strict_accuracy_test']:.4f}")
         return
 
     # si hay varios, los ejecutamos (en serie o en paralelo) con la MISMA partición
     results = Parallel(n_jobs=n_jobs_models)(
-        delayed(run_one_model)(m, df, cfg, trials, epochs, optuna_n_jobs, do_reports=args.reports)
-        for m in model_list
+        delayed(run_one_model)(m, df, cfg, trials, epochs, optuna_n_jobs,
+                       do_reports=args.reports, optuna_storage=optuna_storage)
     )
 
     print("\n=== RESUMEN ===")
