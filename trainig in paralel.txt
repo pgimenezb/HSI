@@ -1,20 +1,5 @@
-1) Correr un modelo (sin scripts)
-#Por CLI:
-python -m hsi_lab.train --models cnn_baseline --trials 40 --epochs 60
-
-#Con variable de entorno (útil en screen):
-export HSI_MODELS="cnn_residual"
-python -m hsi_lab.train
-
-2) Correr varios modelos seguidos:
-python -m hsi_lab.train --models cnn_baseline,dnn_wide,dnn_selu --trials 30 --epochs 50
-
-3) Guardar el log:
-python -m hsi_lab.train --models cnn_baseline --trials 40 --epochs 60 | tee outputs/other_outputs/cnn_baseline_$(date +%Y%m%d-%H%M%S).log
-
-4) Lanzarlo en background con screen:
-screen -S hsi-inproc -dm bash -lc 'conda activate hsi && cd ~/projects/HSI && \
-python -m hsi_lab.train --models cnn_baseline,cnn_residual,dnn_wide \
---trials 30 --epochs 50 --n-jobs-models 3 --optuna-n-jobs 1 --reports \
-| tee outputs/other_outputs/inproc_$(date +%Y%m%d-%H%M%S).log'
-
+1) Lanzarlo en background con screen:
+conda activate hsi
+cd ~/projects/HSI
+export RID=$(date +%Y%m%d-%H%M%S)
+python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epochs 60 --reports --run-id "$RID"
