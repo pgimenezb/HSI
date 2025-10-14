@@ -204,7 +204,7 @@ def main():
     # datos 1 vez
     processor = HSIDataProcessor(cfg)
     processor.load_h5_files()
-    df = processor.dataframe()   # usa dataframe(); si tienes dataframe_cached(), cámbialo aquí
+    df = processor.dataframe_cached()
 
     # === Selección automática (CLI > ENV > config) ===
     env_models = _os.getenv("HSI_MODELS", "")

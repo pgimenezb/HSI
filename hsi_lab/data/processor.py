@@ -36,6 +36,30 @@ from numpy.random import default_rng
 from IPython import get_ipython
 import hashlib, pickle
 from pathlib import Path
+import pickle
+import hashlib
+def _to_jsonable(obj):
+    if isinstance(obj, dict):
+        return {str(k): _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(x) for x in obj]
+    if isinstance(obj, (set, frozenset)):
+        return sorted(_to_jsonable(list(obj)))
+    if isinstance(obj, Path):
+        return str(obj)
+    # numpy -> python
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    return obj
+
+def _stable_hash(payload) -> str:
+    data = _to_jsonable(payload)
+    raw = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()  # corto y suficiente para cache keys
 
 class HSIDataProcessor:
 
@@ -87,7 +111,7 @@ class HSIDataProcessor:
         self.variables["mixture_columns"] = {int(k): v for k, v in self.variables.get("mixture_columns", {}).items()}
         self.binder_columns  = self.variables["binder_columns"]
         self.mixture_columns = self.variables["mixture_columns"]
-
+        self._df_cache = None
 
 
     def set_global_seed(self):
@@ -842,19 +866,42 @@ class HSIDataProcessor:
         s = json.dumps(obj, sort_keys=True, default=str).encode()
         return hashlib.md5(s).hexdigest()
 
-    def dataframe_cached(self, cache_dir="outputs/cache"):
+    def dataframe_cached(self, cache_dir: str = "outputs/cache", force: bool = False):
+        # 1) caché en memoria
+        if (not force) and (self._df_cache is not None):
+            return self._df_cache
+
+        # 2) clave estable para el disco
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
         key = _stable_hash({
-            "variables": self.variables,
-            "files": sorted(list(self.all_data.keys())),
+            "variables": self.variables,                    # config actual
+            "files": sorted(list(self.all_data.keys())),    # ficheros cargados
         })
-        pkl = Path(cache_dir) / f"df_{key}.pkl"
-        if pkl.exists():
-            with open(pkl, "rb") as f:
-                return pickle.load(f)
+        pkl_path = Path(cache_dir) / f"df_{key}.pkl"
+
+        # 3) leer del disco si existe y no forzamos
+        if (not force) and pkl_path.exists():
+            try:
+                with open(pkl_path, "rb") as f:
+                    df = pickle.load(f)
+                # guarda también en memoria
+                self._df_cache = df
+                return df
+            except Exception as e:
+                # si falla la lectura, recomputamos
+                print(f"(info) Caché en disco corrupta, recomputando: {e}")
+
+        # 4) recomputar
         df = self.dataframe()
-        with open(pkl, "wb") as f:
-            pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # 5) guardar en disco y memoria
+        try:
+            with open(pkl_path, "wb") as f:
+                pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as e:
+            print(f"(info) No se pudo escribir la caché en disco: {e}")
+
+        self._df_cache = df
         return df
 
     # inyecta el método en la clase
