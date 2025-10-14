@@ -112,6 +112,9 @@ qsub -v MODELS="cnn_baseline,cnn_residual,cnn_dilated",TRIALS=40,EPOCHS=60,N_JOB
 
 ## Save to Git
 cd ~/projects/HSI
+git remote -v 
+# if NO origin, add (SSH):
+git remote add origin git@github.com:pgimenez/HSI.git
 git status
 git init
 git add -A
