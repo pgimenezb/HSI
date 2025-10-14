@@ -4,29 +4,30 @@ Training CNN/DNN models for **multi-label** classification of VIS+SWIR spectra w
 
 ## Project Layout
 
-Projects/HSI
-  train.py                      # orchestrator (load → split → tune → eval → save)
-``README.md
-    hsi_lab/
-        config.py                  # editable experiment variables
-      data/
-        processor.py            # HDF5 loading → DataFrame + helpers + caching
-      eval/
-        report.py               # reporting metrics and confusion matrix plotting
-      models/
-        metrics.py              # Keras metrics (e.g., strict_accuracy)
-        cnn_baseline.py
-        cnn_residual.py
-        cnn_dilated.py
-        dnn_baseline.py
-        dnn_selu.py
-        dnn_wide.py
-    outputs/
-      saved_models/
-        <RUN_ID>/               # heavy models (.h5 / *.keras)
-      other_outputs/
-        logs/                   # per-model logs (.log)
-        figures/                # plots (confusion matrix, etc.)
+Projects/
+└── HSI/
+├── train.py # orchestrator (load → split → tune → eval → save)
+├── README.md
+├── hsi_lab/
+│ ├── config.py # editable experiment variables
+│ ├── data/
+│ │ └── processor.py # HDF5 loading → DataFrame + helpers + caching
+│ ├── eval/
+│ │ └── report.py # reporting metrics and confusion matrix plotting
+│ └── models/
+│ ├── metrics.py # Keras metrics (e.g., strict_accuracy)
+│ ├── cnn_baseline.py
+│ ├── cnn_residual.py
+│ ├── cnn_dilated.py
+│ ├── dnn_baseline.py
+│ ├── dnn_selu.py
+│ └── dnn_wide.py
+└── outputs/
+├── saved_models/
+│ └── <RUN_ID>/ # heavy models (.h5 / *.keras)
+└── other_outputs/
+├── logs/ # per-model logs (.log)
+└── figures/ # plots (confusion matrix, etc.)
 
 ## Quick Setup
 
@@ -42,6 +43,7 @@ pip install -r requirements.txt
 Edit `hsi_lab/config.py`:
 
 - `data_folder`, `excel_file`
+- `data_type`
 - `num_files`, `start_index`
 - `selected_regions`, `selected_subregions`
 - `outputs_dir`, `models_dir` (they’re nested under `runs/<RUN_ID>` automatically)
