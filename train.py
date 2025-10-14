@@ -1,7 +1,6 @@
 # hsi_lab/train.py
 import os, json, importlib
 from datetime import datetime
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -85,6 +84,28 @@ def _save_artifacts_keras_like(model, study, best_params: dict, cfg: dict, tag: 
         print("(info) No se pudo exportar trials_summary.csv:", e)
 
 # ---------------------------
+# CLI & ENV overrides (para no editar el archivo cada vez)
+# ---------------------------
+import argparse as _argparse
+import os as _os
+
+def _parse_args():
+    p = _argparse.ArgumentParser()
+    p.add_argument("--models", type=str, default="", help="Lista separada por comas (p.ej. cnn_baseline,dnn_wide)")
+    p.add_argument("--trials", type=int, default=None, help="Optuna trials (override)")
+    p.add_argument("--epochs", type=int, default=None, help="Epochs (override)")
+    p.add_argument("--optuna-n-jobs", type=int, default=None, help="Paralelismo interno de Optuna")
+    p.add_argument("--n-jobs-models", type=int, default=None, help="Paralelismo entre modelos (Joblib)")
+    return p.parse_args()
+
+def _resolve_list(value_from_cli: str, value_from_env: str, value_from_cfg):
+    if value_from_cli:
+        return [x.strip() for x in value_from_cli.split(",") if x.strip()]
+    if value_from_env:
+        return [x.strip() for x in value_from_env.split(",") if x.strip()]
+    return value_from_cfg
+
+# ---------------------------
 # core: ejecutar un modelo
 # ---------------------------
 def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
@@ -98,7 +119,7 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
     X_train, X_val,  y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42, shuffle=True)
     X_train = X_train[...,np.newaxis]; X_val = X_val[...,np.newaxis]; X_test = X_test[...,np.newaxis]
 
-    # import dinámico
+    # import dinámico del modelo
     mod = importlib.import_module(f"hsi_lab.models.{model_name}")
     tune = getattr(mod, "tune_and_train")
 
@@ -167,17 +188,20 @@ def main():
     cfg = variables.copy()
     ensure_dirs(cfg)
 
-    # datos 1 vez + caché
+    # datos 1 vez
     processor = HSIDataProcessor(cfg)
     processor.load_h5_files()
-    df = processor.dataframe_cached()
+    df = processor.dataframe()   # usa dataframe(); si tienes dataframe_cached(), cámbialo aquí
 
-    # ¿uno o varios modelos?
-    model_list = cfg.get("model_list", ["cnn"])
-    trials = int(cfg.get("trials", 50))
-    epochs = int(cfg.get("epochs", 50))
-    optuna_n_jobs = int(cfg.get("optuna_n_jobs", 4))
-    n_jobs_models = int(cfg.get("n_jobs_models", 1))
+    # === Selección automática (CLI > ENV > config) ===
+    args = _parse_args()
+    env_models = _os.getenv("HSI_MODELS", "")
+    model_list = _resolve_list(args.models, env_models, cfg.get("model_list", ["cnn_baseline"]))
+
+    trials = args.trials if args.trials is not None else int(cfg.get("trials", 50))
+    epochs = args.epochs if args.epochs is not None else int(cfg.get("epochs", 50))
+    optuna_n_jobs = args.optuna_n_jobs if args.optuna_n_jobs is not None else int(cfg.get("optuna_n_jobs", 4))
+    n_jobs_models = args.n_jobs_models if args.n_jobs_models is not None else int(cfg.get("n_jobs_models", 1))
 
     # si solo hay uno, hacemos el flujo “completo” (con reportes)
     if len(model_list) == 1:
@@ -186,8 +210,7 @@ def main():
         print(f"- {summary['model']}: strict_acc_test={summary['strict_accuracy_test']:.4f}")
         return
 
-    # si hay varios, los ejecutamos (en serie o paralelo) con la MISMA partición
-    # (misma df, y el split se hace dentro de run_one_model con random_state fijo)
+    # si hay varios, los ejecutamos (en serie o en paralelo) con la MISMA partición
     results = Parallel(n_jobs=n_jobs_models)(
         delayed(run_one_model)(m, df, cfg, trials, epochs, optuna_n_jobs, do_reports=False)
         for m in model_list
