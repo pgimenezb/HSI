@@ -1,5 +1,5 @@
 # hsi_lab/train.py
-import os, json, importlib
+import os, json, importlib, sys, contextlib
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from joblib import Parallel, delayed
 from sklearn.model_selection import train_test_split
 import h5py
-from datetime import datetime
+
 from hsi_lab.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval.report import (
@@ -17,12 +17,34 @@ from hsi_lab.eval.report import (
 
 OPTUNA_STORAGE = f"sqlite:///{os.path.abspath('outputs/optuna.db')}"
 
-# ---------------------------
-# utilidades comunes
-# ---------------------------
+# ------------- Tee de logs por modelo -------------
+class _TeeIO:
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+@contextlib.contextmanager
+def tee_to_file(path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    old_out, old_err = sys.stdout, sys.stderr
+    with open(path, "a") as f:
+        sys.stdout = _TeeIO(old_out, f)
+        sys.stderr  = _TeeIO(old_err, f)
+        try:
+            yield
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+
+# ------------- Utilidades comunes -------------
 def ensure_dirs(cfg: dict) -> None:
     os.makedirs(cfg["outputs_dir"], exist_ok=True)
-    os.makedirs(cfg["models_dir"], exist_ok=True)
+    os.makedirs(cfg["models_dir"],  exist_ok=True)
     os.makedirs(os.path.join(cfg["outputs_dir"], "figures"), exist_ok=True)
     os.makedirs("outputs", exist_ok=True)  # para optuna.db
 
@@ -62,7 +84,7 @@ def _save_h5_tree(h5_path: str, out_txt: str):
 def _save_artifacts_keras_like(model, study, best_params: dict, cfg: dict, tag: str):
     # guarda solo si el modelo expone .save (Keras). Para sklearn-like se omite.
     if hasattr(model, "save"):
-        h5_path = os.path.join(cfg["models_dir"], f"{tag}.h5")
+        h5_path    = os.path.join(cfg["models_dir"], f"{tag}.h5")
         keras_path = os.path.join(cfg["models_dir"], f"{tag}.keras")
         try:
             model.save(h5_path)
@@ -83,9 +105,7 @@ def _save_artifacts_keras_like(model, study, best_params: dict, cfg: dict, tag: 
     except Exception as e:
         print("(info) No se pudo exportar trials_summary.csv:", e)
 
-# ---------------------------
-# CLI & ENV overrides (para no editar el archivo cada vez)
-# ---------------------------
+# ------------- CLI & ENV overrides -------------
 import argparse as _argparse
 import os as _os
 
@@ -98,7 +118,6 @@ def _parse_args():
     p.add_argument("--n-jobs-models", type=int, default=None, help="Paralelismo entre modelos (Joblib)")
     p.add_argument("--reports", action="store_true", help="Guardar figuras/CM")
     p.add_argument("--run-id", type=str, default=None, help="Identificador de la ejecución (carpeta)")
-
     return p.parse_args()
 
 def _resolve_list(value_from_cli: str, value_from_env: str, value_from_cfg):
@@ -108,112 +127,109 @@ def _resolve_list(value_from_cli: str, value_from_env: str, value_from_cfg):
         return [x.strip() for x in value_from_env.split(",") if x.strip()]
     return value_from_cfg
 
-# ---------------------------
-# core: ejecutar un modelo
-# ---------------------------
+# ------------- Core: ejecutar un modelo -------------
 def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                   trials: int, epochs: int, optuna_n_jobs: int,
                   do_reports: bool = False):
-    print(f"\n=== ▶ {model_name} ===")
 
-    # split único y estable
-    X, y = prepare_Xy(df)
-    X_temp, X_test, y_temp, y_test = train_test_split(X[...,0], y, test_size=0.3, random_state=42, shuffle=True)
-    X_train, X_val,  y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42, shuffle=True)
-    X_train = X_train[...,np.newaxis]; X_val = X_val[...,np.newaxis]; X_test = X_test[...,np.newaxis]
+    log_path = os.path.join(cfg["outputs_dir"], f"{model_name}.log")
+    with tee_to_file(log_path):
+        print(f"\n=== ▶ {model_name} ===")
 
-    # import dinámico del modelo
-    mod = importlib.import_module(f"hsi_lab.models.{model_name}")
-    tune = getattr(mod, "tune_and_train")
+        # split único y estable
+        X, y = prepare_Xy(df)
+        X_temp, X_test, y_temp, y_test = train_test_split(X[...,0], y, test_size=0.3, random_state=42, shuffle=True)
+        X_train, X_val,  y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42, shuffle=True)
+        X_train = X_train[...,np.newaxis]; X_val = X_val[...,np.newaxis]; X_test = X_test[...,np.newaxis]
 
-    # cada modelo reanuda su propio estudio en la misma DB
-    study_name = f"{model_name}_study_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    model, study, best = tune(
-        X_train, y_train, X_val, y_val,
-        input_len=X_train.shape[1], num_classes=y.shape[1],
-        trials=trials, epochs=epochs,
-        storage=OPTUNA_STORAGE, study_name=study_name, n_jobs=optuna_n_jobs
-    )
+        # import dinámico del modelo
+        mod  = importlib.import_module(f"hsi_lab.models.{model_name}")
+        tune = getattr(mod, "tune_and_train")
 
-    # evaluación homogénea
-    results = model.evaluate(X_test, y_test, verbose=0, return_dict=True)
-    strict_acc = float(results.get("strict_accuracy", float("nan")))
-    print(f"✓ {model_name}: strict_acc_test={strict_acc:.4f}")
-
-    # reportes completos (gráficas, CM) solo si quieres un modelo "principal"
-    if do_reports:
-        y_pred_prob = model.predict(X_test, verbose=0)
-        y_pred_bin = (y_pred_prob >= 0.5).astype(int)
-
-        num_pigments = int(cfg["num_files"])
-        total_labels = y_pred_bin.shape[1]
-        pigment_idx = list(range(0, min(num_pigments, total_labels)))
-        binder_idx = list(range(num_pigments, min(num_pigments + 2, total_labels)))
-        sel_regions = cfg.get("selected_regions", [])
-        has_mixture = all(r not in [5, 6] for r in sel_regions) if sel_regions else True
-        mixture_idx = list(range(num_pigments + 2, min(num_pigments + 4, total_labels))) if has_mixture else []
-
-        print_global_and_per_group_metrics(
-            y_true=y_test, y_pred_prob=y_pred_prob, y_pred_bin=y_pred_bin,
-            pigment_idx=pigment_idx, binder_idx=binder_idx, mixture_idx=mixture_idx,
+        # cada modelo reanuda su propio estudio en la misma DB (nombre único)
+        study_name = f"{model_name}_study_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        model, study, best = tune(
+            X_train, y_train, X_val, y_val,
+            input_len=X_train.shape[1], num_classes=y.shape[1],
+            trials=trials, epochs=epochs,
+            storage=OPTUNA_STORAGE, study_name=study_name, n_jobs=optuna_n_jobs
         )
-        try:
-            plot_confusion_matrix_by_vector(df, y_pred_prob, y_test)
-            fig_path = os.path.join(cfg["outputs_dir"], "figures", f"{model_name}_confusion_matrix.png")
-            plot_confusion_matrix_by_vector(df, y_pred_prob, y_test, save_path=fig_path, show=False)
-            print("✅ Guardada figura:", fig_path)
-        except Exception as e:
-            print("(info) No se pudo dibujar/guardar la matriz de confusión:", e)
 
-    # artefactos ligeros siempre
-    tag = f"{model_name}"
-    _save_artifacts_keras_like(model, study, _to_py_scalars(best), cfg, tag)
+        # evaluación homogénea
+        results    = model.evaluate(X_test, y_test, verbose=0, return_dict=True)
+        strict_acc = float(results.get("strict_accuracy", float("nan")))
+        print(f"✓ {model_name}: strict_acc_test={strict_acc:.4f}")
 
-    # resumen JSON
-    summary = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "model": model_name,
-        "strict_accuracy_test": strict_acc,
-        "best_params": _to_py_scalars(best),
-        "n_test": int(y_test.shape[0]),
-        "n_labels": int(y_test.shape[1]),
-    }
-    with open(os.path.join(cfg["outputs_dir"], f"{model_name}_summary.json"), "w") as f:
-        json.dump(summary, f, indent=2)
+        # reportes completos (gráficas, CM) solo si quieres un modelo "principal"
+        if do_reports:
+            y_pred_prob = model.predict(X_test, verbose=0)
+            y_pred_bin  = (y_pred_prob >= 0.5).astype(int)
 
-    return summary
+            num_pigments = int(cfg["num_files"])
+            total_labels = y_pred_bin.shape[1]
+            pigment_idx  = list(range(0, min(num_pigments, total_labels)))
+            binder_idx   = list(range(num_pigments, min(num_pigments + 2, total_labels)))
+            sel_regions  = cfg.get("selected_regions", [])
+            has_mixture  = all(r not in [5, 6] for r in sel_regions) if sel_regions else True
+            mixture_idx  = list(range(num_pigments + 2, min(num_pigments + 4, total_labels))) if has_mixture else []
 
-# ---------------------------
-# main
-# ---------------------------
+            print_global_and_per_group_metrics(
+                y_true=y_test, y_pred_prob=y_pred_prob, y_pred_bin=y_pred_bin,
+                pigment_idx=pigment_idx, binder_idx=binder_idx, mixture_idx=mixture_idx,
+            )
+            try:
+                fig_path = os.path.join(cfg["outputs_dir"], "figures", f"{model_name}_confusion_matrix.png")
+                plot_confusion_matrix_by_vector(df, y_pred_prob, y_test, save_path=fig_path, show=False)
+                print("✅ Guardada figura:", fig_path)
+            except Exception as e:
+                print("(info) No se pudo dibujar/guardar la matriz de confusión:", e)
+
+        # artefactos ligeros siempre
+        tag = f"{model_name}"
+        _save_artifacts_keras_like(model, study, _to_py_scalars(best), cfg, tag)
+
+        # resumen JSON
+        summary = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "model": model_name,
+            "strict_accuracy_test": strict_acc,
+            "best_params": _to_py_scalars(best),
+            "n_test": int(y_test.shape[0]),
+            "n_labels": int(y_test.shape[1]),
+        }
+        with open(os.path.join(cfg["outputs_dir"], f"{model_name}_summary.json"), "w") as f:
+            json.dump(summary, f, indent=2)
+
+        return summary
+
+# ------------- main -------------
 def main():
     # === CONFIG + CLI/ENV ===
-    cfg = variables.copy()
-
-    # lee CLI/ENV y prepara RUN_ID (compartido por todos los modelos de este lanzamiento)
+    cfg  = variables.copy()
     args = _parse_args()
-    from datetime import datetime
+
+    # RUN_ID (compartido por todos los modelos de este lanzamiento)
     run_id = args.run_id or _os.getenv("HSI_RUN_ID") or datetime.now().strftime("%Y%m%d-%H%M%S")
     cfg["run_id"] = run_id
 
     # redirige outputs a subcarpetas por ejecución
     cfg["outputs_dir"] = _os.path.join(cfg["outputs_dir"], "runs", run_id)
-    cfg["models_dir"]  = _os.path.join(cfg["models_dir"], run_id)
-    ensure_dirs(cfg)  # <- ahora crea esas carpetas
+    cfg["models_dir"]  = _os.path.join(cfg["models_dir"],  run_id)
+    ensure_dirs(cfg)
 
-    # datos 1 vez
+    # datos 1 vez (usa caché si la tienes implementada)
     processor = HSIDataProcessor(cfg)
     processor.load_h5_files()
-    df = processor.dataframe_cached()
+    df = processor.dataframe_cached()  # o processor.dataframe()
 
-    # === Selección automática (CLI > ENV > config) ===
+    # Selección automática (CLI > ENV > config)
     env_models = _os.getenv("HSI_MODELS", "")
     model_list = _resolve_list(args.models, env_models, cfg.get("model_list", ["cnn_baseline"]))
 
-    trials         = args.trials         if args.trials         is not None else int(cfg.get("trials", 50))
-    epochs         = args.epochs         if args.epochs         is not None else int(cfg.get("epochs", 50))
-    optuna_n_jobs  = args.optuna_n_jobs  if args.optuna_n_jobs  is not None else int(cfg.get("optuna_n_jobs", 4))
-    n_jobs_models  = args.n_jobs_models  if args.n_jobs_models  is not None else int(cfg.get("n_jobs_models", 1))
+    trials        = args.trials        if args.trials        is not None else int(cfg.get("trials", 50))
+    epochs        = args.epochs        if args.epochs        is not None else int(cfg.get("epochs", 50))
+    optuna_n_jobs = args.optuna_n_jobs if args.optuna_n_jobs is not None else int(cfg.get("optuna_n_jobs", 4))
+    n_jobs_models = args.n_jobs_models if args.n_jobs_models is not None else int(cfg.get("n_jobs_models", 1))
 
     # si solo hay uno, hacemos el flujo “completo” (con reportes)
     if len(model_list) == 1:
@@ -234,4 +250,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
