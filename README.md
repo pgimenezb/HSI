@@ -105,9 +105,9 @@ export RID=$(date +%Y%m%d-%H%M%S)
 python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epochs 60 --reports --run-id "$RID"
 ```
 
-## Run with job_python ()
+## Run with JOB SCHEDULER ()
 cd ~/projects/HSI
-qsub -v MODELS="cnn_baseline,cnn_residual,cnn_dilated",TRIALS=40,EPOCHS=60,N_JOBS_MODELS=3,OPTUNA_N_JOBS=4 job_hsi_train.pbs
+qsub -v MODELS="cnn_baseline,cnn_residual,cnn_dilated",TRIALS=40,EPOCHS=60,N_JOBS_MODELS=3,OPTUNA_N_JOBS=4 job_scheduler.pbs
 
 
 ## Save to Git
