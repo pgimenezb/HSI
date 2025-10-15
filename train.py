@@ -11,7 +11,8 @@ import h5py
 from hsi_lab.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval.report import (
-    plot_confusion_matrix_by_vector,   # <- solo existe esta en tu report.py
+    plot_confusion_matrix_by_vector,
+    print_global_and_per_group_metrics,
 )
 
 OPTUNA_STORAGE = None
@@ -170,12 +171,46 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
         # reportes completos (opcionales)
         if do_reports:
             try:
+                # --- Predicciones ---
                 y_pred_prob = model.predict(X_test, verbose=0)
+                y_pred_bin  = (y_pred_prob >= 0.5).astype(int)
+
+                # --- Confusion Matrix por vector completo ---
                 fig_path = os.path.join(cfg["outputs_dir"], "figures", f"{model_name}_confusion_matrix.png")
                 plot_confusion_matrix_by_vector(df, y_pred_prob, y_test, save_path=fig_path, show=False)
                 print("✅ Guardada figura:", fig_path)
+
+                # --- Índices de bloques (20 pigmentos, B binders, 4 mixtures) ---
+                total_labels = y_test.shape[1]
+                n_pigments   = 20
+                n_mixtures   = 4
+                n_binders    = total_labels - n_pigments - n_mixtures
+                if n_binders < 0:
+                    raise ValueError(f"Dimensiones de y incompatibles: total={total_labels}, esperado >= {n_pigments + n_mixtures}")
+
+                pigment_idx = list(range(0, n_pigments))
+                binder_idx  = list(range(n_pigments, n_pigments + n_binders))
+                mixture_idx = list(range(n_pigments + n_binders, n_pigments + n_binders + n_mixtures))
+
+                # --- Métricas globales y por bloque (tablas + classification_report a disco) ---
+                other_out_dir = "projects/HSI/outputs/other_outputs"
+                report_prefix = f"{model_name}_test"
+
+                df_global, df_groups = print_global_and_per_group_metrics(
+                    y_true      = y_test.astype(int),
+                    y_pred_prob = y_pred_prob,
+                    y_pred_bin  = y_pred_bin,
+                    pigment_idx = pigment_idx,
+                    binder_idx  = binder_idx,
+                    mixture_idx = mixture_idx,
+                    out_dir     = other_out_dir,
+                    report_prefix = report_prefix
+                )
+
+                print("✅ Tablas de métricas guardadas en:", other_out_dir)
+
             except Exception as e:
-                print("(info) No se pudo dibujar/guardar la matriz de confusión:", e)
+                print("(info) No se pudieron generar reportes/figuras/metricas:", e)
 
         # artefactos
         tag = f"{model_name}"

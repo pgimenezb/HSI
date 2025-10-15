@@ -1,6 +1,6 @@
 import os
 from typing import Optional, List
-
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import (
@@ -8,6 +8,8 @@ from sklearn.metrics import (
     accuracy_score, hamming_loss, roc_auc_score, average_precision_score,
     f1_score, recall_score, precision_score, log_loss
 )
+
+# --- CONFUSION MATRIX ---
 
 def plot_confusion_matrix_by_vector(
     df,
@@ -17,10 +19,6 @@ def plot_confusion_matrix_by_vector(
     save_path: Optional[str] = None,
     show: bool = False,
 ):
-    """
-    Construye una matriz de confusión donde cada clase es un vector multilabel completo.
-    Normaliza por filas (%). Compatible con Python <3.10.
-    """
     # --- Binarización ---
     y_pred_bin = (y_pred_prob >= float(threshold)).astype(int)
     y_true_bin = y_true.astype(int)
@@ -103,6 +101,19 @@ def plot_confusion_matrix_by_vector(
         "saved_to": saved_to,
     }
 
+import os
+import numpy as np
+import pandas as pd
+from typing import Optional, List
+import matplotlib.pyplot as plt
+from sklearn.metrics import (
+    confusion_matrix, ConfusionMatrixDisplay, classification_report,
+    accuracy_score, hamming_loss, roc_auc_score, average_precision_score,
+    f1_score, recall_score, precision_score, log_loss
+)
+
+# --- METRICS ---
+
 def print_global_and_per_group_metrics(
     y_true: np.ndarray,
     y_pred_prob: np.ndarray,
@@ -110,47 +121,25 @@ def print_global_and_per_group_metrics(
     pigment_idx: list,
     binder_idx: list,
     mixture_idx: list,
-) -> None:
-    """
-    Imprime métricas globales y por bloques (Pigments / Binders / Mixtures).
-    - y_true:    (N, L) binario
-    - y_pred_prob: (N, L) probabilidades [0,1]
-    - y_pred_bin:  (N, L) binario
-    - *_idx: listas de índices de etiquetas para cada bloque
-    """
+    out_dir: str = "projects/HSI/outputs/other_outputs",
+    report_prefix: str = "val"
+):
+    os.makedirs(out_dir, exist_ok=True)
 
-    n_samples, n_labels = y_true.shape
-    print("\n🟢 CLASSIFICATION REPORT")
-    print("----------------------------------")
-    print(classification_report(y_true, y_pred_bin, zero_division=0))
-
-    # ---------- Índices usados ----------
-    print("\n🔹 Index ranges:")
-    print(f"Pigments: {pigment_idx if pigment_idx else '[]'}")
-    print(f"Binders : {binder_idx  if binder_idx  else '[]'}")
-    print(f"Mixtures: {mixture_idx if mixture_idx else '[]'}")
-
-    # ---------- Bloque de métricas: helpers ----------
+    # ---------- helpers ----------
     def _safe_auc(yt, yp):
-        try:
-            return float(roc_auc_score(yt, yp, average='micro'))
-        except Exception:
-            return float('nan')
+        try:    return float(roc_auc_score(yt, yp, average='micro'))
+        except: return float('nan')
 
     def _safe_ap(yt, yp):
-        try:
-            return float(average_precision_score(yt, yp, average='micro'))
-        except Exception:
-            return float('nan')
+        try:    return float(average_precision_score(yt, yp, average='micro'))
+        except: return float('nan')
 
     def _safe_logloss(yt, yp):
-        try:
-            return float(log_loss(yt, yp))
-        except Exception:
-            return float('nan')
+        try:    return float(log_loss(yt, yp))
+        except: return float('nan')
 
     def _accuracy_pack(yt, yb):
-        # métricas de "accuracy" varias
         non_zero_sample = float(np.mean(np.any((yt & yb) == 1, axis=1)))
         non_zero_label  = float(np.mean(np.any((yt == yb), axis=0)))
         strict          = float(np.mean(np.all(yt == yb, axis=1)))
@@ -159,52 +148,64 @@ def print_global_and_per_group_metrics(
         hamming_acc     = float(1.0 - hamming_loss(yt, yb))
         return {
             "non_zero_sample": non_zero_sample,
-            "non_zero_label": non_zero_label,
-            "strict": strict,
-            "general": general,
-            "keras_like": keras_like,
-            "hamming_acc": hamming_acc,
+            "non_zero_label":  non_zero_label,
+            "strict":          strict,
+            "general":         general,
+            "keras_like":      keras_like,
+            "hamming_acc":     hamming_acc,
         }
 
     def _prf_pack(yt, yb):
-        f1  = float(f1_score(yt, yb, average='micro', zero_division=0))
-        rec = float(recall_score(yt, yb, average='micro', zero_division=0))
-        pre = float(precision_score(yt, yb, average='micro', zero_division=0))
-        return {"f1": f1, "recall": rec, "precision": pre}
+        return {
+            "f1":        float(f1_score(yt, yb, average='micro', zero_division=0)),
+            "precision": float(precision_score(yt, yb, average='micro', zero_division=0)),
+            "recall":    float(recall_score(yt, yb, average='micro', zero_division=0)),
+        }
+
+    # ---------- imprimir breve por consola ----------
+    print("\n🟢 CLASSIFICATION REPORT")
+    print("----------------------------------")
+    print(classification_report(y_true, y_pred_bin, zero_division=0))
+
+    print("\n🔹 Index ranges:")
+    print(f"Pigments: {pigment_idx if pigment_idx else '[]'}")
+    print(f"Binders : {binder_idx  if binder_idx  else '[]'}")
+    print(f"Mixtures: {mixture_idx if mixture_idx else '[]'}")
 
     # ---------- GLOBAL ----------
-    print("\n🟢 BLOCK 1: GLOBAL METRICS")
-
     glob_acc = _accuracy_pack(y_true, y_pred_bin)
     glob_prf = _prf_pack(y_true, y_pred_bin)
     glob_auc = _safe_auc(y_true, y_pred_prob)
     glob_ap  = _safe_ap(y_true, y_pred_prob)
     glob_ll  = _safe_logloss(y_true, y_pred_prob)
 
-    print("\n🔹 Accuracy Metrics:")
-    print(f"Non-zero accuracy per sample:  {glob_acc['non_zero_sample']:.4f}")
-    print(f"Non-zero accuracy per label:   {glob_acc['non_zero_label']:.4f}")
-    print(f"Strict accuracy:               {glob_acc['strict']:.4f}")
-    print(f"General accuracy (sklearn):    {glob_acc['general']:.4f}")
-    print(f"Keras-like\" accuracy:        {glob_acc['keras_like']:.4f}")
-    print(f"Hamming accuracy:              {glob_acc['hamming_acc']:.4f}")
+    print("\n🟢 BLOCK 1: GLOBAL METRICS")
+    print(f"Non-zero/sample: {glob_acc['non_zero_sample']:.4f} | Non-zero/label: {glob_acc['non_zero_label']:.4f} | "
+          f"Strict: {glob_acc['strict']:.4f} | General: {glob_acc['general']:.4f} | "
+          f"Keras-like: {glob_acc['keras_like']:.4f} | Hamming-acc: {glob_acc['hamming_acc']:.4f}")
+    print(f"F1: {glob_prf['f1']:.4f} | Precision: {glob_prf['precision']:.4f} | Recall: {glob_prf['recall']:.4f} | "
+          f"ROC-AUC(μ): {glob_auc:.4f} | AP(μ): {glob_ap:.4f} | LogLoss: {glob_ll:.4f}")
 
-    print("\n🔹 Other Metrics:")
-    print(f"F1-Score:                      {glob_prf['f1']:.4f}")
-    print(f"Precision:                     {glob_prf['precision']:.4f}")
-    print(f"Recall:                        {glob_prf['recall']:.4f}")
-    print(f"ROC-AUC (micro):               {glob_auc:.4f}")
-    print(f"Average Precision (micro):     {glob_ap:.4f}")
-    print(f"Log Loss:                      {glob_ll:.4f}")
+    global_row = {
+        "scope": "GLOBAL",
+        **glob_acc,
+        **glob_prf,
+        "roc_auc_micro": glob_auc,
+        "avg_precision_micro": glob_ap,
+        "log_loss": glob_ll,
+    }
+    df_global = pd.DataFrame([global_row])
 
     # ---------- PER-GROUP ----------
     print("\n----------------------------------")
     print("🟢 BLOCK 2: PER-MATERIAL METRICS")
 
-    def _block(name: str, idx: list):
+    rows = []
+    for name, idx in [("Pigments", pigment_idx), ("Binders", binder_idx), ("Mixtures", mixture_idx)]:
         if not idx:
             print(f"\n{name.upper()}: (no classes / empty indices)")
-            return
+            rows.append({"scope": name, "note": "empty index"})
+            continue
         yt = y_true[:, idx]
         yp = y_pred_prob[:, idx]
         yb = y_pred_bin[:, idx]
@@ -212,23 +213,46 @@ def print_global_and_per_group_metrics(
         acc = _accuracy_pack(yt, yb)
         prf = _prf_pack(yt, yb)
         auc = _safe_auc(yt, yp)
+        ap  = _safe_ap(yt, yp)
         ll  = _safe_logloss(yt, yp)
 
-        print(f"\n🔸 {name.upper()} Accuracy Metrics:")
-        print(f"Non-zero accuracy per sample:  {acc['non_zero_sample']:.4f}")
-        print(f"Non-zero accuracy per label:   {acc['non_zero_label']:.4f}")
-        print(f"Strict accuracy:               {acc['strict']:.4f}")
-        print(f"General accuracy (sklearn):    {acc['general']:.4f}")
-        print(f"Keras-like\" accuracy:         {acc['keras_like']:.4f}")
-        print(f"Hamming accuracy:              {acc['hamming_acc']:.4f}")
+        print(f"\n🔸 {name.upper()} -> "
+              f"Non-zero/sample: {acc['non_zero_sample']:.4f} | Non-zero/label: {acc['non_zero_label']:.4f} | "
+              f"Strict: {acc['strict']:.4f} | General: {acc['general']:.4f} | "
+              f"Keras-like: {acc['keras_like']:.4f} | Hamming-acc: {acc['hamming_acc']:.4f} | "
+              f"F1: {prf['f1']:.4f} | P: {prf['precision']:.4f} | R: {prf['recall']:.4f} | "
+              f"ROC-AUC(μ): {auc:.4f} | AP(μ): {ap:.4f} | LogLoss: {ll:.4f}")
 
-        print("\n🔹 Other Metrics:")
-        print(f"F1 Score:                      {prf['f1']:.4f}")
-        print(f"Precision:                     {prf['precision']:.4f}")
-        print(f"Recall:                        {prf['recall']:.4f}")
-        print(f"ROC-AUC (micro):               {auc:.4f}")
-        print(f"Log Loss:                      {ll:.4f}")
+        rows.append({
+            "scope": name,
+            **acc,
+            **prf,
+            "roc_auc_micro": auc,
+            "avg_precision_micro": ap,
+            "log_loss": ll,
+        })
 
-    _block("Pigments", pigment_idx)
-    _block("Binders",  binder_idx)
-    _block("Mixtures", mixture_idx)
+    df_per_group = pd.DataFrame(rows)
+
+    # ---------- classification_report a disco ----------
+    rep_dict = classification_report(y_true, y_pred_bin, output_dict=True, zero_division=0)
+    df_report = pd.DataFrame(rep_dict).transpose()
+
+    p_global_csv = os.path.join(out_dir, f"{report_prefix}_global_metrics.csv")
+    p_group_csv  = os.path.join(out_dir, f"{report_prefix}_per_group_metrics.csv")
+    p_rep_csv    = os.path.join(out_dir, f"{report_prefix}_classification_report.csv")
+    p_rep_txt    = os.path.join(out_dir, f"{report_prefix}_classification_report.txt")
+
+    df_global.to_csv(p_global_csv, index=False)
+    df_per_group.to_csv(p_group_csv, index=False)
+    df_report.to_csv(p_rep_csv)
+    with open(p_rep_txt, "w", encoding="utf-8") as f:
+        f.write(classification_report(y_true, y_pred_bin, zero_division=0))
+
+    print(f"\n💾 Guardado:")
+    print(f" - {p_global_csv}")
+    print(f" - {p_group_csv}")
+    print(f" - {p_rep_csv}")
+    print(f" - {p_rep_txt}")
+
+    return df_global, df_per_group
