@@ -108,9 +108,11 @@ python -m train.py --models cnn_baseline,dnn_wide --reports
 # o:
 python train.py --models cnn_baseline --reports --limit-rows 0
 # also limiting rows per subregion:
-python train.py --models cnn_baseline --reports --group-by Subregion --per-group-limit 500
+python train.py --models cnn_baseline --group-by Subregion --per-group-limit 500
+python train.py --models cnn_baseline,dnn_wide --reports --group-by Subregion --per-group-limit 500
 # or per subregion and pigment (combination of columns):
-python train.py --models cnn_baseline --reports --group-by Subregion,Pigment --per-group-limit 200
+python train.py --models cnn_baseline --group-by Subregion,Pigment 
+python train.py --models cnn_baseline,dnn_wide --reports --group-by Subregion,Pigment --per-group-limit 200
 # detach: Ctrl+A then D
 # reattach: screen -r hsi
 ```
