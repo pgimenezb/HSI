@@ -8,12 +8,13 @@ from joblib import Parallel, delayed
 from sklearn.model_selection import train_test_split
 import h5py
 
-from hsi_lab.config import variables
+# OJO: usa el import que corresponda en tu repo. Si lo tienes en hsi_lab.config, cambia esta línea.
+from hsi_lab.data.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval.report import (
     plot_confusion_matrix_by_vector,
     print_global_and_per_group_metrics,
-    plot_confusion_matrix_for_block,   
+    plot_confusion_matrix_for_block,
 )
 
 OPTUNA_STORAGE = None
@@ -44,10 +45,10 @@ def tee_to_file(path: str):
 
 # ------------- Utilidades comunes -------------
 def ensure_dirs(cfg: dict) -> None:
-    os.makedirs(cfg["outputs_dir"], exist_ok=True)
-    os.makedirs(cfg["models_dir"],  exist_ok=True)
-    os.makedirs(os.path.join(cfg["outputs_dir"], "figures"), exist_ok=True)
-    os.makedirs("outputs", exist_ok=True)  # para optuna.db
+    # Guardamos TODO directamente en outputs/runs/<RUN_ID>
+    os.makedirs(cfg["outputs_dir"], exist_ok=True)   # carpeta del run
+    os.makedirs(cfg["logs_dir"], exist_ok=True)      # si == outputs_dir, no crea nada extra
+    os.makedirs("outputs", exist_ok=True)            # compatibilidad (p.ej. optuna.db)
 
 def prepare_Xy(df: pd.DataFrame):
     spec_cols = [c for c in df.columns if c.startswith(("vis_", "swir_", "val_vis_", "val_swir_"))]
@@ -147,17 +148,17 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
     with tee_to_file(log_path):
         print(f"\n=== ▶ {model_name} ===")
 
-        # split único y estable
+        # split único y estable (por índices para alinear df y y)
         X, y = prepare_Xy(df)
-        X_temp, X_test, y_temp, y_test = train_test_split(
-            X[..., 0], y, test_size=0.3, random_state=42, shuffle=True
+        idx_all = np.arange(len(df))
+        idx_temp, idx_test, y_temp, y_test = train_test_split(
+            idx_all, y, test_size=0.3, random_state=42, shuffle=True
         )
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_temp, y_temp, test_size=0.5, random_state=42, shuffle=True
+        idx_train, idx_val, y_train, y_val = train_test_split(
+            idx_temp, y_temp, test_size=0.5, random_state=42, shuffle=True
         )
-        X_train = X_train[..., np.newaxis]
-        X_val   = X_val[..., np.newaxis]
-        X_test  = X_test[..., np.newaxis]
+        X_train, X_val, X_test = X[idx_train], X[idx_val], X[idx_test]
+        df_test = df.iloc[idx_test].reset_index(drop=True)
 
         # import dinámico del modelo
         mod  = importlib.import_module(f"hsi_lab.models.{model_name}")
@@ -185,8 +186,10 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                 y_pred_bin  = (y_pred_prob >= 0.5).astype(int)
 
                 # --- Confusion Matrix por vector completo ---
-                fig_path = os.path.join(cfg["outputs_dir"], "figures", f"{model_name}_confusion_matrix.png")
-                plot_confusion_matrix_by_vector(df, y_pred_prob, y_test, threshold=0.3, save_path=fig_path, show=False)
+                fig_path = os.path.join(cfg["outputs_dir"], f"{model_name}_confusion_matrix.png")
+                plot_confusion_matrix_by_vector(
+                    df_test, y_pred_prob, y_test, threshold=0.3, save_path=fig_path, show=False
+                )
                 print("✅ Guardada figura:", fig_path)
 
                 # --- Índices de bloques (20 pigmentos, B binders, 4 mixtures) ---
@@ -201,8 +204,8 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                 binder_idx  = list(range(n_pigments, n_pigments + n_binders))
                 mixture_idx = list(range(n_pigments + n_binders, n_pigments + n_binders + n_mixtures))
 
-                # --- Métricas globales y por bloque (tablas + classification_report a disco) ---
-                other_out_dir = os.path.join(cfg["outputs_dir"], "other_outputs")
+                # --- Métricas globales y por bloque (CSV/TXT en outputs_dir) ---
+                other_out_dir = cfg["outputs_dir"]
                 os.makedirs(other_out_dir, exist_ok=True)
                 report_prefix = f"{model_name}_test"
 
@@ -216,16 +219,11 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                     out_dir     = other_out_dir,
                     report_prefix = report_prefix
                 )
-
                 print("✅ Tablas de métricas guardadas en:", other_out_dir)
 
-                # --- Confusion Matrices por bloque ---
-                fig_dir = os.path.join(cfg["outputs_dir"], "figures")
-                os.makedirs(fig_dir, exist_ok=True)
-
-                # Pigments
+                # --- Confusion Matrices por bloque (también en outputs_dir) ---
                 if pigment_idx:
-                    p_pig = os.path.join(fig_dir, f"{model_name}_confusion_matrix_pigments.png")
+                    p_pig = os.path.join(cfg["outputs_dir"], f"{model_name}_confusion_matrix_pigments.png")
                     plot_confusion_matrix_for_block(
                         y_true_block      = y_test[:, pigment_idx].astype(int),
                         y_pred_prob_block = y_pred_prob[:, pigment_idx],
@@ -235,9 +233,8 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                     )
                     print("✅ Guardada figura (Pigments):", p_pig)
 
-                # Binders
                 if binder_idx:
-                    p_bind = os.path.join(fig_dir, f"{model_name}_confusion_matrix_binders.png")
+                    p_bind = os.path.join(cfg["outputs_dir"], f"{model_name}_confusion_matrix_binders.png")
                     plot_confusion_matrix_for_block(
                         y_true_block      = y_test[:, binder_idx].astype(int),
                         y_pred_prob_block = y_pred_prob[:, binder_idx],
@@ -247,9 +244,8 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                     )
                     print("✅ Guardada figura (Binders):", p_bind)
 
-                # Mixtures
                 if mixture_idx:
-                    p_mix = os.path.join(fig_dir, f"{model_name}_confusion_matrix_mixtures.png")
+                    p_mix = os.path.join(cfg["outputs_dir"], f"{model_name}_confusion_matrix_mixtures.png")
                     plot_confusion_matrix_for_block(
                         y_true_block      = y_test[:, mixture_idx].astype(int),
                         y_pred_prob_block = y_pred_prob[:, mixture_idx],
@@ -288,23 +284,22 @@ def main():
     cfg  = variables.copy()
     args = _parse_args()
 
-    # RUN_ID (compartido por todos los modelos de este lanzamiento)
+    # RUN_ID
     run_id = args.run_id or _os.getenv("HSI_RUN_ID") or datetime.now().strftime("%Y%m%d-%H%M%S")
     cfg["run_id"] = run_id
 
-    # redirige outputs a subcarpetas por ejecución
+    # Guardar TODO directamente en outputs/runs/<RUN_ID>/
     cfg["outputs_dir"] = _os.path.join(cfg["outputs_dir"], "runs", run_id)
-    cfg["models_dir"]  = _os.path.join(cfg["models_dir"],  run_id)
-    ensure_dirs(cfg)
-    logs_dir = os.path.join(cfg["outputs_dir"], "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    cfg["logs_dir"] = logs_dir  # para usarla en run_one_model
+    cfg["models_dir"]  = cfg["outputs_dir"]        # modelos pesados también aquí
+    cfg["logs_dir"]    = cfg["outputs_dir"]        # logs junto con el resto
 
-    # OPTUNA_STORAGE (DB por ejecución)
+    ensure_dirs(cfg)
+
+    # OPTUNA_STORAGE (DB por ejecución) dentro del run
     global OPTUNA_STORAGE
     OPTUNA_STORAGE = f"sqlite:///{os.path.abspath(os.path.join(cfg['outputs_dir'], 'optuna.db'))}"
 
-    # datos 1 vez (usa caché si la tienes implementada)
+    # ---- datos una vez (usa caché si la tienes implementada) ----
     processor = HSIDataProcessor(cfg)
     processor.load_h5_files()
     df = processor.dataframe_cached()  # o processor.dataframe()
@@ -327,15 +322,14 @@ def main():
             print(f"(warn) --group-by contiene columnas inexistentes: {missing}. Se ignora muestreo por grupo.")
         else:
             orig_n = len(df)
-            # muestreo reproducible por grupo
             rng = np.random.RandomState(42)
             df = (
                 df.assign(_rnd=rng.rand(len(df)))
-                .sort_values('_rnd')
-                .groupby(group_cols, group_keys=False)
-                .head(per_group_limit)
-                .drop(columns='_rnd')
-                .reset_index(drop=True)
+                  .sort_values('_rnd')
+                  .groupby(group_cols, group_keys=False)
+                  .head(per_group_limit)
+                  .drop(columns='_rnd')
+                  .reset_index(drop=True)
             )
             n_groups = df[group_cols].drop_duplicates().shape[0]
             print(f"(info) per-group limit={per_group_limit} por {group_cols} → df: {orig_n} → {len(df)} filas "

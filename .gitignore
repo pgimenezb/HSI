@@ -35,10 +35,11 @@ env/
 
 # --- outputs: versionar todo, excepto pesos en saved_models ---
 !outputs/**
-
+outputs/**/optuna.db
 # ignora pesos dentro de outputs/saved_models (pero deja el .gitkeep)
-outputs/saved_models/*
-!outputs/saved_models/.gitkeep
+!outputs/**/saved_model/.gitkeep
+outputs/**/saved_model/
+
 
 # Versionar outputs/ pero NO binarios pesados dentro
 !outputs/**

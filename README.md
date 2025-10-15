@@ -15,27 +15,30 @@ Projects/
 │ ├── eval/
 │ │ └── report.py # reporting metrics and confusion matrix plotting
 │ └── models/
-│ ├── metrics.py # Keras metrics (e.g., strict_accuracy)
-│ ├── cnn_baseline.py
-│ ├── cnn_residual.py
-│ ├── cnn_dilated.py
-│ ├── dnn_baseline.py
-│ ├── dnn_selu.py
-│ └── dnn_wide.py
-└── outputs/
-├── saved_models/
-│ └── <RUN_ID>/ # heavy models (.h5 / *.keras)
-└── outputs/runs/<RUN_ID>/
-  ├─ figures/
-  │   └─ <model>_confusion_matrix.png
-  ├─ other_outputs/
-  │   ├─ <model>_test_global_metrics.csv                
-  │   ├─ <model>_test_per_group_metrics.csv            
-  │   ├─ <model>_test_classification_report.csv
-  │   ├─ <model>_test_classification_report_pigments.csv
-  │   ├─ <model>_test_classification_report_binders.csv
-  │   └─ <model>_test_classification_report_mixtures.csv
-  └─ logs/<model>.log
+  │ ├── metrics.py # Keras metrics (e.g., strict_accuracy)
+  │ ├── cnn_baseline.py
+  │ ├── cnn_residual.py
+  │ ├── cnn_dilated.py
+  │ ├── dnn_baseline.py
+  │ ├── dnn_selu.py
+  │ └── dnn_wide.py
+  └── outputs/runs/<RUN_ID>/
+    ├─ optuna.db
+    ├─ cnn_baseline_confusion_matrix.png
+    ├─ cnn_baseline_confusion_matrix_pigments.png
+    ├─ cnn_baseline_confusion_matrix_binders.png
+    ├─ cnn_baseline_confusion_matrix_mixtures.png
+    ├─ cnn_baseline_test_global_metrics.csv
+    ├─ cnn_baseline_test_per_group_metrics.csv
+    ├─ cnn_baseline_test_classification_report.csv
+    ├─ cnn_baseline_test_classification_report_pigments.csv
+    ├─ cnn_baseline_test_classification_report_binders.csv
+    ├─ cnn_baseline_test_classification_report_mixtures.csv
+    ├─ cnn_baseline_best_params.csv
+    ├─ cnn_baseline_trials_summary.csv
+    ├─ cnn_baseline_summary.json
+    ├─ cnn_baseline.h5            (si se pudo guardar)
+    └─ cnn_baseline.keras         (si se pudo guardar)
 
 ## Quick Setup
 

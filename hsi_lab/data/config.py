@@ -9,7 +9,6 @@ variables = {
     "savgol_window": 0,
     "savgol_polyorder": 0,
     "num_regions": 1,
-
     "num_binder": {"Arabic Gum": 1, "Egg Tempera": 2},
     "num_mixture": {
         "Pure": 1,
@@ -17,12 +16,10 @@ variables = {
         "Pigment + White titanium (50:50)": 3,
         "Pigment + White titanium (20:80)": 4
     },
-
     "binder_columns":  {20: "Arabic Gum", 21: "Egg Tempera"},
     "mixture_columns": {22: "Pure", 23: "Pigment + White titanium (80:20)",
                         24: "Pigment + White titanium (50:50)",
                         25: "Pigment + White titanium (20:80)"},
-
     "meta_label_map": {
         1: ("Arabic Gum", "10"),
         2: ("Egg Tempera", "01"),
@@ -31,24 +28,19 @@ variables = {
         5: ("Pigment + White titanium (50:50)", "0010"),
         6: ("Pigment + White titanium (20:80)", "0001")
     },
-
     "binder_mapping":  {"10": "Arabic Gum", "01": "Egg Tempera"},
     "mixture_mapping": {"1000": "Pure",
                         "0100": "Pigment + White titanium (80:20)",
                         "0010": "Pigment + White titanium (50:50)",
                         "0001": "Pigment + White titanium (20:80)"},
-
     "selected_binders": [],
-
     "smoothing_method": "Without filter",
     "ai_architecture": "CNN",
     "target_mode": "pigments+binders",
     "model": "Model 1",
-
     "seed": 42,
-    "models_dir": "outputs/saved_models",
-    "outputs_dir": "outputs/other_outputs",
-
+    "outputs_dir": "outputs",   
+    "models_dir":  "outputs",   
     "model_list": ["cnn_baseline","cnn_dilated","cnn_residual", "dnn_baseline","dnn_selu","dnn_wide"],     
     "trials": 50,
     "epochs": 50,
