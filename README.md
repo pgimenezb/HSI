@@ -91,7 +91,8 @@ If not provided, `train.py` generates `RUN_ID` from a timestamp. Optuna storage:
 
 ```bash
 screen -S hsi
-conda activate hsi && cd ~/projects/HSI
+conda activate hsi
+cd /home/pgimenez/projects/HSI
 python train.py --models cnn_baseline,cnn_residual,cnn_dilated --reports
 # o:
 python train.py --models cnn_baseline --reports --limit-rows 0

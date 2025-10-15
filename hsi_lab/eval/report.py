@@ -2,6 +2,8 @@ import os
 from typing import Optional, List
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")   # backend without X11
 import matplotlib.pyplot as plt
 from sklearn.metrics import (
     confusion_matrix, ConfusionMatrixDisplay, classification_report,
