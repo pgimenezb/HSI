@@ -25,9 +25,17 @@ Projects/
 └── outputs/
 ├── saved_models/
 │ └── <RUN_ID>/ # heavy models (.h5 / *.keras)
-└── other_outputs/
-├── logs/ # per-model logs (.log)
-└── figures/ # plots (confusion matrix, etc.)
+└── outputs/runs/<RUN_ID>/
+  ├─ figures/
+  │   └─ <model>_confusion_matrix.png
+  ├─ other_outputs/
+  │   ├─ <model>_test_global_metrics.csv                
+  │   ├─ <model>_test_per_group_metrics.csv            
+  │   ├─ <model>_test_classification_report.csv
+  │   ├─ <model>_test_classification_report_pigments.csv
+  │   ├─ <model>_test_classification_report_binders.csv
+  │   └─ <model>_test_classification_report_mixtures.csv
+  └─ logs/<model>.log
 
 ## Quick Setup
 
@@ -93,7 +101,10 @@ If not provided, `train.py` generates `RUN_ID` from a timestamp. Optuna storage:
 screen -S hsi
 conda activate hsi
 cd /home/pgimenez/projects/HSI
-python train.py --models cnn_baseline,cnn_residual,cnn_dilated --reports
+# if only 1 model:
+python -m train.py --models cnn_baseline
+# if more than one:
+python -m train.py --models cnn_baseline,dnn_wide --reports
 # o:
 python train.py --models cnn_baseline --reports --limit-rows 0
 # also limiting rows per subregion:

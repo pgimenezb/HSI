@@ -234,9 +234,21 @@ def print_global_and_per_group_metrics(
             "log_loss": ll,
         })
 
+        # --- NUEVO: classification_report por bloque a disco ---
+        rep_block_dict = classification_report(yt, yb, output_dict=True, zero_division=0)
+        df_rep_block = pd.DataFrame(rep_block_dict).transpose()
+        safe_name = name.lower()
+        p_rep_block_csv = os.path.join(out_dir, f"{report_prefix}_classification_report_{safe_name}.csv")
+        p_rep_block_txt = os.path.join(out_dir, f"{report_prefix}_classification_report_{safe_name}.txt")
+        df_rep_block.to_csv(p_rep_block_csv)
+        with open(p_rep_block_txt, "w", encoding="utf-8") as f:
+            f.write(classification_report(yt, yb, zero_division=0))
+        print(f"   ↳ guardado classification_report por bloque: {p_rep_block_csv}")
+        print(f"   ↳ guardado classification_report por bloque (txt): {p_rep_block_txt}")
+
     df_per_group = pd.DataFrame(rows)
 
-    # ---------- classification_report a disco ----------
+    # ---------- classification_report GLOBAL a disco ----------
     rep_dict = classification_report(y_true, y_pred_bin, output_dict=True, zero_division=0)
     df_report = pd.DataFrame(rep_dict).transpose()
 
@@ -256,5 +268,8 @@ def print_global_and_per_group_metrics(
     print(f" - {p_group_csv}")
     print(f" - {p_rep_csv}")
     print(f" - {p_rep_txt}")
+
+    return df_global, df_per_group
+
 
     return df_global, df_per_group

@@ -185,7 +185,7 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
 
                 # --- Confusion Matrix por vector completo ---
                 fig_path = os.path.join(cfg["outputs_dir"], "figures", f"{model_name}_confusion_matrix.png")
-                plot_confusion_matrix_by_vector(df, y_pred_prob, y_test, save_path=fig_path, show=False)
+                plot_confusion_matrix_by_vector(df, y_pred_prob, y_test, threshold=0.3, save_path=fig_path, show=False)
                 print("✅ Guardada figura:", fig_path)
 
                 # --- Índices de bloques (20 pigmentos, B binders, 4 mixtures) ---
@@ -201,7 +201,8 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                 mixture_idx = list(range(n_pigments + n_binders, n_pigments + n_binders + n_mixtures))
 
                 # --- Métricas globales y por bloque (tablas + classification_report a disco) ---
-                other_out_dir = "projects/HSI/outputs/other_outputs"
+                other_out_dir = os.path.join(cfg["outputs_dir"], "other_outputs")
++               os.makedirs(other_out_dir, exist_ok=True)
                 report_prefix = f"{model_name}_test"
 
                 df_global, df_groups = print_global_and_per_group_metrics(
