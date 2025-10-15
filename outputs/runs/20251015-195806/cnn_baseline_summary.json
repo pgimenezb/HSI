@@ -1,0 +1,20 @@
+{
+  "timestamp": "2025-10-15T20:00:16",
+  "model": "cnn_baseline",
+  "strict_accuracy_test": 0.0,
+  "best_params": {
+    "filters_1": 256,
+    "kernel_1": 6,
+    "dropout_1": 0.4244148737162609,
+    "filters_2": 1024,
+    "kernel_2": 5,
+    "dropout_2": 0.4515032694645025,
+    "dense_units": 512,
+    "dropout_3": 0.39714195909935807,
+    "lr": 0.0010860266356751843,
+    "batch_size": 32
+  },
+  "n_test": 30,
+  "n_labels": 10,
+  "log_file": "outputs/runs/20251015-195806/cnn_baseline.log"
+}

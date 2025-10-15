@@ -37,8 +37,8 @@ Projects/
     ├─ cnn_baseline_best_params.csv
     ├─ cnn_baseline_trials_summary.csv
     ├─ cnn_baseline_summary.json
-    ├─ cnn_baseline.h5            (si se pudo guardar)
-    └─ cnn_baseline.keras         (si se pudo guardar)
+    ├─ cnn_baseline.h5           
+    └─ cnn_baseline.keras         
 
 ## Quick Setup
 
@@ -59,36 +59,6 @@ Edit `hsi_lab/config.py`:
 - `selected_regions`, `selected_subregions`
 - `outputs_dir`, `models_dir` (they’re nested under `runs/<RUN_ID>` automatically)
 
-## Run (CLI)
-
-**Single model with full reports**
-```bash
-python train.py --models cnn_baseline --trials 40 --epochs 60 --reports
-```
-
-**Multiple models (same split, sequential by default)**
-```bash
-python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epochs 60 --reports
-```
-
-**Parallel across models (Joblib)**
-```bash
-python train.py --models cnn_baseline,cnn_residual,cnn_dilated   --n-jobs-models 3 --trials 40 --epochs 60 --reports
-```
-
-**Fixed RUN_ID to group outputs**
-```bash
-python train.py --run-id 20250101-120000 --models cnn_baseline --reports
-```
-If not provided, `train.py` generates `RUN_ID` from a timestamp. Optuna storage: `outputs/runs/<RUN_ID>/optuna.db`.
-
-## Outputs
-
-- **Per-model logs:** `outputs/runs/<RUN_ID>/logs/<model>.log`  
-  View live: `tail -f outputs/runs/<RUN_ID>/logs/cnn_baseline.log`
-- **Figures:** `outputs/runs/<RUN_ID>/figures/<model>_confusion_matrix.png` (only with `--reports`)
-- **Light artifacts:** `*_best_params.csv`, `*_trials_summary.csv`, `*_summary.json` under `outputs/runs/<RUN_ID>/`
-- **Models:** `saved_models/<RUN_ID>/<model>.h5` and `<model>.keras`
 
 ## Tips
 
@@ -112,7 +82,7 @@ python -m train.py --models cnn_baseline,dnn_wide --reports
 python train.py --models cnn_baseline --reports --limit-rows 0
 # also limiting rows per subregion:
 python train.py --models cnn_baseline --group-by Subregion --per-group-limit 500
-python train.py --models cnn_baseline,dnn_wide --reports --group-by Subregion --per-group-limit 500
+
 # or per subregion and pigment (combination of columns):
 python train.py --models cnn_baseline --group-by Subregion,Pigment 
 python train.py --models cnn_baseline,dnn_wide --reports --group-by Subregion,Pigment --per-group-limit 200
@@ -130,7 +100,12 @@ python train.py --models cnn_baseline,cnn_residual,cnn_dilated --trials 40 --epo
 
 ## Run with JOB SCHEDULER ()
 cd ~/projects/HSI
-qsub -v MODELS="cnn_baseline,cnn_residual,cnn_dilated",TRIALS=40,EPOCHS=60,N_JOBS_MODELS=3,OPTUNA_N_JOBS=4 job_scheduler.pbs
+#one model withou row limit:
+qsub -v MODELS=cnn_baseline,REPORTS_FLAG= hsi_train.pbs
+#one model with row limit:
+qsub -v MODELS=cnn_baseline,GROUP_BY=Subregion,PER_GROUP_LIMIT=500 hsi_train.pbs
+#more than one model with row limit:
+qsub -v MODELS=cnn_baseline,cnn_residual,TRIALS=40,EPOCHS=60,OPTUNA_N_JOBS=4,REPORTS_FLAG=--reports hsi_train.pbs
 
 
 ## Save to Git

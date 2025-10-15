@@ -14,17 +14,21 @@ set -euo pipefail
 ########################
 # USER CONFIG (edit)
 ########################
-# Conda en Obelix
-CONDA_HOME="$HOME/miniconda3"
-CONDA_ENV="vsserver"            # cambia si tu env se llama distinto (p.ej. "hsi")
+# Conda
+CONDA_HOME="${CONDA_HOME:-$HOME/miniconda3}"
+CONDA_ENV="${CONDA_ENV:-hsi}"            # cambia si tu env se llama distinto
 
-# Modelos y parámetros por defecto (puedes sobreescribir con qsub -v)
-MODELS="${MODELS:-cnn_baseline,cnn_residual,cnn_dilated}"
-TRIALS="${TRIALS:-40}"
-EPOCHS="${EPOCHS:-60}"
+# Modelos y parámetros por defecto (puedes sobreescribir con qsub -v VAR=...)
+MODELS="${MODELS:-cnn_baseline}"         # ej: cnn_baseline,cnn_residual,cnn_dilated
+TRIALS="${TRIALS:-50}"
+EPOCHS="${EPOCHS:-50}"
 N_JOBS_MODELS="${N_JOBS_MODELS:-1}"      # paralelismo entre modelos
 OPTUNA_N_JOBS="${OPTUNA_N_JOBS:-4}"      # paralelismo interno de Optuna
-REPORTS_FLAG="--reports"                 # quítalo si no quieres figuras
+REPORTS_FLAG="${REPORTS_FLAG:---reports}"# solo útil si MODELS contiene >1
+
+# Sampling opcional por grupo (si no quieres, deja vacío GROUP_BY o PER_GROUP_LIMIT)
+GROUP_BY="${GROUP_BY:-}"                  # ej: "Subregion" o "Subregion,Pigment"
+PER_GROUP_LIMIT="${PER_GROUP_LIMIT:-}"    # ej: 500
 
 ########################
 # ENV / MODULES
@@ -38,17 +42,18 @@ fi
 
 # Evita problemas GUI de matplotlib
 export MPLBACKEND=Agg
-# (opcional) reduce oversubscription si usas sólo CPU
+# (opcional) controla threads si usas solo CPU
 export OMP_NUM_THREADS="${PBS_NUM_PPN:-4}"
 export MKL_NUM_THREADS="${PBS_NUM_PPN:-4}"
 export TF_NUM_INTRAOP_THREADS="${PBS_NUM_PPN:-4}"
 export TF_NUM_INTEROP_THREADS=1
 export HDF5_USE_FILE_LOCKING=FALSE
+export TF_CPP_MIN_LOG_LEVEL=2   # menos ruido de TF
 
 ########################
 # PATHS
 ########################
-WORKDIR="${PBS_O_WORKDIR:-$PWD}"            # donde hiciste qsub (tu repo)
+WORKDIR="${PBS_O_WORKDIR:-$PWD}"                 # repo desde el que haces qsub
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)_${PBS_JOBID:-local}}"
 
 # scratch local del nodo
@@ -65,7 +70,7 @@ date
 ########################
 # SYNC CODE -> SCRATCH
 ########################
-# Copiamos el código (sin .git, sin outputs previos) a scratch
+# Copia el repo (sin .git ni outputs previos) al scratch
 mkdir -p "$SCRATCHDIR/HSI"
 rsync -a \
   --exclude ".git" \
@@ -82,7 +87,16 @@ export PYTHONPATH="$PWD"
 ########################
 # COMANDO DE EJECUCIÓN
 ########################
-# train.py ya crea outputs/runs/<RUN_ID>/ y saved_models/<RUN_ID> automáticamente
+# Construye flags opcionales de sampling
+GROUP_FLAGS=""
+if [ -n "$GROUP_BY" ]; then
+  GROUP_FLAGS+=" --group-by \"$GROUP_BY\""
+fi
+if [ -n "$PER_GROUP_LIMIT" ]; then
+  GROUP_FLAGS+=" --per-group-limit $PER_GROUP_LIMIT"
+fi
+
+# train.py guarda TODO en outputs/runs/<RUN_ID>/ según tu código actual
 PYTHON_CMD="python -u train.py \
   --models ${MODELS} \
   --trials ${TRIALS} \
@@ -90,37 +104,32 @@ PYTHON_CMD="python -u train.py \
   --n-jobs-models ${N_JOBS_MODELS} \
   --optuna-n-jobs ${OPTUNA_N_JOBS} \
   --run-id ${RUN_ID} \
-  ${REPORTS_FLAG}
+  ${REPORTS_FLAG} \
+  ${GROUP_FLAGS}
 "
 
-# Logs del job (además de los logs por modelo que escribe train.py)
-JOB_LOG_SCRATCH="$SCRATCHDIR/HSI/outputs/runs/${RUN_ID}/logs/job_${RUN_ID}.log"
-mkdir -p "$(dirname "$JOB_LOG_SCRATCH")"
+# Prepara carpeta de logs del job dentro del run
+RUN_OUT_DIR="$SCRATCHDIR/HSI/outputs/runs/${RUN_ID}"
+mkdir -p "$RUN_OUT_DIR"
+JOB_LOG_SCRATCH="$RUN_OUT_DIR/job_${RUN_ID}.log"
 
 echo "====================================================" | tee -a "$JOB_LOG_SCRATCH"
 echo "Running: $PYTHON_CMD" | tee -a "$JOB_LOG_SCRATCH"
 echo "====================================================" | tee -a "$JOB_LOG_SCRATCH"
 
 # Ejecuta en scratch
-eval "$PYTHON_CMD" 2>&1 | tee -a "$JOB_LOG_SCRATCH"
+# shellcheck disable=SC2086
+eval $PYTHON_CMD 2>&1 | tee -a "$JOB_LOG_SCRATCH"
 
 ########################
 # SYNC OUTPUTS -> WORK
 ########################
-# Sincroniza todo lo generado de vuelta a tu repo
-mkdir -p "$WORKDIR/outputs/runs" "$WORKDIR/saved_models"
-
-# outputs de la ejecución
-rsync -a "$SCRATCHDIR/HSI/outputs/runs/${RUN_ID}/" "$WORKDIR/outputs/runs/${RUN_ID}/"
-
-# modelos pesados (si existen)
-if [ -d "$SCRATCHDIR/HSI/saved_models/${RUN_ID}" ]; then
-  rsync -a "$SCRATCHDIR/HSI/saved_models/${RUN_ID}/" "$WORKDIR/saved_models/${RUN_ID}/"
-fi
+# Sincroniza outputs del run de vuelta al repo
+mkdir -p "$WORKDIR/outputs/runs"
+rsync -a "$RUN_OUT_DIR/" "$WORKDIR/outputs/runs/${RUN_ID}/"
 
 echo "Archivos sincronizados a:"
 echo " - $WORKDIR/outputs/runs/${RUN_ID}/"
-echo " - $WORKDIR/saved_models/${RUN_ID}/ (si aplica)"
 
 ########################
 # LIMPIEZA

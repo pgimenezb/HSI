@@ -42,8 +42,8 @@ variables = {
     "outputs_dir": "outputs",   
     "models_dir":  "outputs",   
     "model_list": ["cnn_baseline","cnn_dilated","cnn_residual", "dnn_baseline","dnn_selu","dnn_wide"],     
-    "trials": 50,
-    "epochs": 50,
+    "trials": 10,
+    "epochs": 10,
     "optuna_n_jobs": 4,         
     "n_jobs_models": 1,         
 }
