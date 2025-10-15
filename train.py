@@ -13,6 +13,7 @@ from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval.report import (
     plot_confusion_matrix_by_vector,
     print_global_and_per_group_metrics,
+    plot_confusion_matrix_for_block,   
 )
 
 OPTUNA_STORAGE = None
@@ -202,7 +203,7 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
 
                 # --- Métricas globales y por bloque (tablas + classification_report a disco) ---
                 other_out_dir = os.path.join(cfg["outputs_dir"], "other_outputs")
-+               os.makedirs(other_out_dir, exist_ok=True)
+                os.makedirs(other_out_dir, exist_ok=True)
                 report_prefix = f"{model_name}_test"
 
                 df_global, df_groups = print_global_and_per_group_metrics(
@@ -217,6 +218,46 @@ def run_one_model(model_name: str, df: pd.DataFrame, cfg: dict,
                 )
 
                 print("✅ Tablas de métricas guardadas en:", other_out_dir)
+
+                # --- Confusion Matrices por bloque ---
+                fig_dir = os.path.join(cfg["outputs_dir"], "figures")
+                os.makedirs(fig_dir, exist_ok=True)
+
+                # Pigments
+                if pigment_idx:
+                    p_pig = os.path.join(fig_dir, f"{model_name}_confusion_matrix_pigments.png")
+                    plot_confusion_matrix_for_block(
+                        y_true_block      = y_test[:, pigment_idx].astype(int),
+                        y_pred_prob_block = y_pred_prob[:, pigment_idx],
+                        class_prefix      = "P",
+                        save_path         = p_pig,
+                        show              = False
+                    )
+                    print("✅ Guardada figura (Pigments):", p_pig)
+
+                # Binders
+                if binder_idx:
+                    p_bind = os.path.join(fig_dir, f"{model_name}_confusion_matrix_binders.png")
+                    plot_confusion_matrix_for_block(
+                        y_true_block      = y_test[:, binder_idx].astype(int),
+                        y_pred_prob_block = y_pred_prob[:, binder_idx],
+                        class_prefix      = "B",
+                        save_path         = p_bind,
+                        show              = False
+                    )
+                    print("✅ Guardada figura (Binders):", p_bind)
+
+                # Mixtures
+                if mixture_idx:
+                    p_mix = os.path.join(fig_dir, f"{model_name}_confusion_matrix_mixtures.png")
+                    plot_confusion_matrix_for_block(
+                        y_true_block      = y_test[:, mixture_idx].astype(int),
+                        y_pred_prob_block = y_pred_prob[:, mixture_idx],
+                        class_prefix      = "M",
+                        save_path         = p_mix,
+                        show              = False
+                    )
+                    print("✅ Guardada figura (Mixtures):", p_mix)
 
             except Exception as e:
                 print("(info) No se pudieron generar reportes/figuras/metricas:", e)
@@ -287,10 +328,15 @@ def main():
         else:
             orig_n = len(df)
             # muestreo reproducible por grupo
-            def _sample_g(g):
-                n = min(per_group_limit, len(g))
-                return g.sample(n=n, random_state=42)
-            df = (df.groupby(group_cols, group_keys=False).apply(_sample_g).reset_index(drop=True))
+            rng = np.random.RandomState(42)
+            df = (
+                df.assign(_rnd=rng.rand(len(df)))
+                .sort_values('_rnd')
+                .groupby(group_cols, group_keys=False)
+                .head(per_group_limit)
+                .drop(columns='_rnd')
+                .reset_index(drop=True)
+            )
             n_groups = df[group_cols].drop_duplicates().shape[0]
             print(f"(info) per-group limit={per_group_limit} por {group_cols} → df: {orig_n} → {len(df)} filas "
                   f"({n_groups} grupos)")

@@ -103,16 +103,75 @@ def plot_confusion_matrix_by_vector(
         "saved_to": saved_to,
     }
 
-import os
-import numpy as np
-import pandas as pd
-from typing import Optional, List
-import matplotlib.pyplot as plt
-from sklearn.metrics import (
-    confusion_matrix, ConfusionMatrixDisplay, classification_report,
-    accuracy_score, hamming_loss, roc_auc_score, average_precision_score,
-    f1_score, recall_score, precision_score, log_loss
-)
+
+def plot_confusion_matrix_for_block(
+    y_true_block: np.ndarray,
+    y_pred_prob_block: np.ndarray,
+    class_prefix: str,
+    save_path: Optional[str] = None,
+    show: bool = False,
+):
+
+    import numpy as _np
+    from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+    assert y_true_block.ndim == 2 and y_pred_prob_block.ndim == 2
+    assert y_true_block.shape == y_pred_prob_block.shape
+    n_classes = y_true_block.shape[1]
+
+    # Etiquetas por argmax (robusto ante 0 o >1 unos)
+    y_true_cls = _np.argmax(y_true_block, axis=1)
+    y_pred_cls = _np.argmax(y_pred_prob_block, axis=1)
+
+    # Nombres de clases simples: P0.., B0.., M0..
+    labels = [f"{class_prefix}{i}" for i in range(n_classes)]
+
+    # CM de conteos
+    cm_counts = confusion_matrix(y_true_cls, y_pred_cls, labels=list(range(n_classes)))
+
+    # Normalizada por fila (%)
+    with _np.errstate(divide="ignore", invalid="ignore"):
+        row_sums = cm_counts.sum(axis=1, keepdims=True)
+        cm_percent = cm_counts.astype(float) / _np.maximum(row_sums, 1)
+        cm_percent = _np.nan_to_num(cm_percent)
+
+    # Tamaño dinámico
+    n_labels = n_classes
+    fig_w = max(8, min(0.6 * n_labels, 40))
+    fig_h = max(6, min(0.6 * n_labels, 40))
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    disp = ConfusionMatrixDisplay(cm_percent, display_labels=labels)
+    disp.plot(cmap=plt.cm.Blues, ax=ax, values_format=".2f", colorbar=True)
+
+    ax.set_title(f"Confusion Matrix – {class_prefix} block (row-normalized: %)", fontsize=14)
+    ax.set_xlabel("Predicted", fontsize=12)
+    ax.set_ylabel("True", fontsize=12)
+    plt.setp(ax.get_xticklabels(), rotation=90, ha="center", fontsize=9)
+    plt.setp(ax.get_yticklabels(), rotation=0,  ha="right",  fontsize=9)
+    plt.tight_layout()
+
+    saved_to = None
+    if save_path:
+        try:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        except Exception:
+            pass
+        plt.savefig(save_path, dpi=130, bbox_inches="tight")
+        saved_to = save_path
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return {
+        "labels": labels,
+        "cm_counts": cm_counts,
+        "cm_percent": cm_percent,
+        "saved_to": saved_to,
+    }
+
 
 # --- METRICS ---
 
