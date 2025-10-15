@@ -125,7 +125,7 @@ git remote add origin git@github.com:pgimenez/HSI.git
 git status
 git init
 git add -A
-git commit -m "Initial commit"
+git commit -m "Initial commit 1"
 git branch -M main
 git push -u origin main
 
