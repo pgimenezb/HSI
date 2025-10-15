@@ -93,6 +93,12 @@ If not provided, `train.py` generates `RUN_ID` from a timestamp. Optuna storage:
 screen -S hsi
 conda activate hsi && cd ~/projects/HSI
 python train.py --models cnn_baseline,cnn_residual,cnn_dilated --reports
+# o:
+python train.py --models cnn_baseline --reports --limit-rows 0
+# also limiting rows per subregion:
+python train.py --models cnn_baseline --reports --group-by Subregion --per-group-limit 500
+# or per subregion and pigment (combination of columns):
+python train.py --models cnn_baseline --reports --group-by Subregion,Pigment --per-group-limit 200
 # detach: Ctrl+A then D
 # reattach: screen -r hsi
 ```

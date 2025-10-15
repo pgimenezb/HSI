@@ -840,3 +840,4 @@ class HSIDataProcessor:
 
         self._df_cache = df
         return df
+

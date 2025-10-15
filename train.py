@@ -118,6 +118,14 @@ def _parse_args():
     p.add_argument("--n-jobs-models", type=int, default=None, help="Paralelismo entre modelos (Joblib)")
     p.add_argument("--reports", action="store_true", help="Guardar figuras/CM")
     p.add_argument("--run-id", type=str, default=None, help="Identificador de la ejecución (carpeta)")
+    p.add_argument("--group-by", type=str, default=None,
+                   help="Columna(s) para agrupar (p.ej. Subregion o 'Subregion,Pigment').")
+    p.add_argument("--per-group-limit", type=int, default=None,
+                   help="Máximo de filas por grupo definido por --group-by.")
+    p.add_argument("--limit-rows", type=int, default=None,
+                   help="Usa solo N filas totales (muestra aleatoria, reproducible).")
+    p.add_argument("--sample-frac", type=float, default=None,
+                   help="Usa una fracción del dataframe (0-1). Ignorado si --limit-rows está presente.")
     return p.parse_args()
 
 def _resolve_list(value_from_cli: str, value_from_env: str, value_from_cfg):
@@ -258,6 +266,33 @@ def main():
     processor = HSIDataProcessor(cfg)
     processor.load_h5_files()
     df = processor.dataframe_cached()  # o processor.dataframe()
+
+    # ---- limitar tamaño del df para pruebas rápidas ----
+    group_by_env = _os.getenv("HSI_GROUP_BY")
+    per_group_limit_env = _os.getenv("HSI_PER_GROUP_LIMIT")
+
+    group_by_arg = args.group_by or group_by_env
+    per_group_limit = (
+        args.per_group_limit
+        if args.per_group_limit is not None
+        else (int(per_group_limit_env) if per_group_limit_env else None)
+    )
+
+    if group_by_arg and per_group_limit and per_group_limit > 0:
+        group_cols = [c.strip() for c in group_by_arg.split(",") if c.strip()]
+        missing = [c for c in group_cols if c not in df.columns]
+        if missing:
+            print(f"(warn) --group-by contiene columnas inexistentes: {missing}. Se ignora muestreo por grupo.")
+        else:
+            orig_n = len(df)
+            # muestreo reproducible por grupo
+            def _sample_g(g):
+                n = min(per_group_limit, len(g))
+                return g.sample(n=n, random_state=42)
+            df = (df.groupby(group_cols, group_keys=False).apply(_sample_g).reset_index(drop=True))
+            n_groups = df[group_cols].drop_duplicates().shape[0]
+            print(f"(info) per-group limit={per_group_limit} por {group_cols} → df: {orig_n} → {len(df)} filas "
+                  f"({n_groups} grupos)")
 
     # Selección automática (CLI > ENV > config)
     env_models = _os.getenv("HSI_MODELS", "")
