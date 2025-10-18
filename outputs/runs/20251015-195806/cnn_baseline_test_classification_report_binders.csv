@@ -1,7 +1,0 @@
-,precision,recall,f1-score,support
-0,1.0,1.0,1.0,13.0
-1,0.0,0.0,0.0,0.0
-micro avg,1.0,1.0,1.0,13.0
-macro avg,0.5,0.5,0.5,13.0
-weighted avg,1.0,1.0,1.0,13.0
-samples avg,1.0,1.0,1.0,13.0

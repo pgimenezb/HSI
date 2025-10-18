@@ -78,11 +78,14 @@ cd /home/pgimenez/projects/HSI
 python -m train.py --models cnn_baseline
 # if more than one:
 python -m train.py --models cnn_baseline,dnn_wide --reports
-# o:
+# or:
 python train.py --models cnn_baseline --reports --limit-rows 0
 # also limiting rows per subregion:
-python train.py --models cnn_baseline --group-by Subregion --per-group-limit 500
-
+python train.py --models cnn_baseline --group-by Subregion --per-group-limit-map "1=300,2=100,3=100,4=100"
+#or:
+python train.py --models cnn_baseline --group-by Subregion --per-group-limit-map "1=300,2=100" 
+#  limiting rows per region:
+python train.py --models cnn_baseline --group-by Region --per-group-limit-map "1=300,2=100,3=100,4=100"
 # or per subregion and pigment (combination of columns):
 python train.py --models cnn_baseline --group-by Subregion,Pigment 
 python train.py --models cnn_baseline,dnn_wide --reports --group-by Subregion,Pigment --per-group-limit 200
@@ -113,7 +116,7 @@ cd ~/projects/HSI
 git remote -v 
 # if NO origin, add (SSH):
 git remote add origin git@github.com:pgimenez/HSI.git
-git status
+git add -A
 git init
 git add -A
 git commit -m "Initial commit 1"
@@ -124,6 +127,15 @@ git push -u origin main
 git remote add origin git@github.com:pgimenez/HSI.git
 git push -u origin main
 
+# if other processes
+cd ~/projects/HSI
+ps aux | grep '[g]it'
+rm -f .git/index.lock
+ssh -T git@github.com
+git remote set-url origin git@github.com:pgimenezb/HSI.git
+git remote -v
+git remote add origin git@github.com:pgimenez/HSI.git
+git init
 ## Troubleshooting
 
 - **No module named `hsi_lab`**  

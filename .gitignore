@@ -1,59 +1,22 @@
-# Bytecode / caches
-__pycache__/
-*.py[cod]
-*.egg-info/
-
-# Entornos
-.env
-.venv/
-venv/
-env/
-
-# VS Code / notebooks cache
-.vscode/
-.ipynb_checkpoints/
-
-# Logs (⚠️ permitiremos logs en outputs más abajo)
-# *.log   ← quita o comenta esta línea si quieres subir logs globalmente
-
-# Datos / pesos en la RAÍZ (no afecta a hsi_lab/*)
-#/data/
-
-# /outputs/  ← NO lo ignores: queremos versionarlo
-
-# --- binarios pesados en cualquier sitio (por seguridad) ---
+database/
 *.h5
-*.hdf5
-*.ckpt
 *.npz
 *.npy
 *.pt
-*.pth
-*.zip
-*.tar
-*.tar.gz
-
-# --- outputs: versionar todo, excepto pesos en saved_models ---
-!outputs/**
-outputs/**/optuna.db
-# ignora pesos dentro de outputs/saved_models (pero deja el .gitkeep)
-!outputs/**/saved_model/.gitkeep
-outputs/**/saved_model/
-
-
-# Versionar outputs/ pero NO binarios pesados dentro
-!outputs/**
-outputs/*.h5
-outputs/*.hdf5
-outputs/*.ckpt
-outputs/*.npz
-outputs/*.npy
-outputs/*.pt
-outputs/*.pth
-outputs/*.zip
-outputs/*.tar
-outputs/*.tar.gz
-
-# Sistema
+*.ckpt
+*.onnx
+*.db
+outputs/
+conf_mats/
+tables/
+.venv/
+venv/
+env/
+envs/
+__pycache__/
+.ipynb_checkpoints/
 .DS_Store
-Thumbs.db
+*.log
+
+models/
+checkpoints/
