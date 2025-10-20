@@ -1,17 +1,21 @@
 import os, time, numpy as np, optuna, tensorflow as tf
 from tensorflow.keras import Model
-from tensorflow.keras.layers import (Input, Conv1D, MaxPooling1D, Dense, Dropout,
-                                     GlobalAveragePooling1D, BatchNormalization)
+from tensorflow.keras.layers import (
+    Input, Conv1D, MaxPooling1D, Dense, Dropout,
+    GlobalAveragePooling1D, BatchNormalization
+)
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.optimizers import Adam
 from hsi_lab.data.config import variables
 
-def _set_seeds(seed=42):
+
+def _set_seeds(seed: int = 42):
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-def build_cnn_multihead(input_len, n_pigments, n_mix, trial):
+
+def build_cnn_multihead(input_len: int, n_pigments: int, n_mix: int, trial) -> Model:
     x_in = Input(shape=(input_len, 1), name="spec")
 
     x = Conv1D(
@@ -56,9 +60,14 @@ def build_cnn_multihead(input_len, n_pigments, n_mix, trial):
     )
     return model
 
-def tune_and_train(X_train, y_train, X_val, y_val, input_len, num_classes,
-                   trials=None, epochs=None, storage=None, study_name=None, n_jobs=1, **kw):
-    """y_* viene concatenado (N, n_pig + 4). Aquí lo separamos en dos cabezas."""
+
+def tune_and_train(
+    X_train, y_train, X_val, y_val,
+    input_len: int, num_classes: int,
+    trials: int | None = None, epochs: int | None = None,
+    storage: str | None = None, study_name: str | None = None,
+    n_jobs: int = 1, **kw
+):
     seed = int(kw.get("seed", variables.get("seed", 42)))
     _set_seeds(seed)
 
@@ -70,11 +79,14 @@ def tune_and_train(X_train, y_train, X_val, y_val, input_len, num_classes,
     n_jobs = int(n_jobs or variables.get("optuna_n_jobs", 1))
 
     if storage is None:
+        os.makedirs("outputs", exist_ok=True)
         storage = f"sqlite:///{os.path.abspath('outputs/optuna.db')}"
     if study_name is None:
-        study_name = f"cnn_baseline_{time.strftime('%Y%m%d_%H%M%S')}"
+        study_name = f"cnn_multihead_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    # SQLite no soporta bien concurrency alta
     if str(storage).startswith("sqlite"):
-        n_jobs = 1  # SQLite no soporta bien n_jobs>1 concurrente
+        n_jobs = 1
 
     def split_y(y):
         y = y.astype("float32")
@@ -91,7 +103,7 @@ def tune_and_train(X_train, y_train, X_val, y_val, input_len, num_classes,
         sampler=optuna.samplers.TPESampler(seed=seed),
     )
 
-    def objective(trial):
+    def objective(trial: optuna.trial.Trial) -> float:
         _set_seeds(seed)
         model = build_cnn_multihead(input_len, n_pig, n_mix, trial)
         h = model.fit(
@@ -101,10 +113,12 @@ def tune_and_train(X_train, y_train, X_val, y_val, input_len, num_classes,
             epochs=epochs,
             batch_size=trial.suggest_categorical("batch_size", [32, 64, 128]),
             verbose=0,
-            callbacks= EarlyStopping("val_loss", patience=5, restore_best_weights=True),
-        )       
+            callbacks=[EarlyStopping("val_loss", patience=5, restore_best_weights=True)],
+        )
         # objetivo: media de accuracies de las dos cabezas
-        return float(0.5 * (np.max(h.history["val_pig_acc"]) + np.max(h.history["val_mix_acc"])))
+        best_pig = float(np.max(h.history["val_pig_acc"]))
+        best_mix = float(np.max(h.history["val_mix_acc"]))
+        return 0.5 * (best_pig + best_mix)
 
     study.optimize(objective, n_trials=trials, n_jobs=n_jobs)
 

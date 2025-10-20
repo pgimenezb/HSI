@@ -1,314 +1,252 @@
-
-
-# train.py
 import os
+import re
 import argparse
-import importlib
+from collections import defaultdict
+
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 from hsi_lab.data.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
-from hsi_lab.eval.report import save_confusion_pngs, evaluation_metrics, export_global_table
-from sklearn.model_selection import StratifiedShuffleSplit
+from hsi_lab.eval.report import cm_pigment_mix2N, cm_pigment_mix4N, cm_mix_global2
 
-# =========================
-# Utilidades
-# =========================
-def ensure_outputs_dir(arg_out: str | None, cfg_out: str | None) -> str:
-    out_dir = arg_out or cfg_out or "outputs"
-    os.makedirs(out_dir, exist_ok=True)
-    return out_dir
 
-def parse_limit_map(s: str | None):
+# ─────────────────────────────────────────────────────────────────────────────
+# Utilidades mínimas
+# ─────────────────────────────────────────────────────────────────────────────
+def parse_region_quota(s: str) -> dict[int, int]:
+    """Convierte '1:300,2:100' en {1:300, 2:100}."""
     if not s:
         return {}
-    out = {}
-    for item in s.split(","):
-        k, v = item.split("=")
-        out[str(k).strip()] = int(v.strip())
+    out: dict[int, int] = {}
+    for tok in s.split(","):
+        m = re.match(r"^\s*(\d+)\s*:\s*(\d+)\s*$", tok.strip())
+        if not m:
+            raise ValueError(f"Formato inválido en --region-quota: {tok}")
+        out[int(m.group(1))] = int(m.group(2))
     return out
 
-def log_df_info(tag: str, dfx: pd.DataFrame):
-    print(f"[DATA] {tag}: shape={dfx.shape}")
-    if "Region" in dfx.columns:
-        try:
-            vc = dfx["Region"].value_counts(dropna=False).sort_index()
-            print(f"[DATA] {tag}: filas por Region ->")
-            for k, v in vc.items():
-                print(f"  - Region {k}: {v}")
-        except Exception as e:
-            print(f"[DATA] {tag}: no se pudo listar Region ({e})")
-    if "Multi" in dfx.columns:
-        try:
-            lens = dfx["Multi"].map(len)
-            print(f"[DATA] {tag}: len(Multi): min={lens.min()}, max={lens.max()}, únicos={sorted(set(lens))}")
-        except Exception:
-            pass
 
-def load_model_module(name: str):
-    mod_name = name if name.startswith("hsi_lab.models.") else f"hsi_lab.models.{name}"
-    try:
-        return importlib.import_module(mod_name)
-    except ModuleNotFoundError as e:
-        raise ValueError(f"Non supported model: {name}") from e
-
-# --- sampler balanceado por pigmento dentro de cada región ---
-def sample_by_region_balanced(df, region_col, limit_map, balance_col="Pigment Index",
-                              num_files=None, seed=42):
+def sample_per_region(
+    df: pd.DataFrame,
+    per_region: int | None = None,
+    quota_map: dict[int, int] | None = None,
+    seed: int = 42,
+) -> pd.DataFrame:
     """
-    Balancea por pigmento dentro de cada región.
-    Si num_files se pasa (p.ej. 4), balancea entre pigmentos 0..num_files-1.
+    Muestrea por 'Region' SIN reequilibrar nada.
+    - Si quota_map: cantidades por región, ej: {1:300,2:100}
+    - Si per_region: misma cantidad para todas las regiones presentes
+    Solo recorta filas y baraja; no toca columnas ni etiquetas.
     """
-    parts = []
+    if "Region" not in df.columns:
+        return df
 
-    target_pigments = set(range(int(num_files))) if num_files is not None else None
+    rng = np.random.default_rng(seed)
+    parts: list[pd.DataFrame] = []
 
-    for region, subdf in df.groupby(region_col, dropna=False):
-        lim = limit_map.get(region, None)
-        if lim is None or lim >= len(subdf):
-            parts.append(subdf)
-            continue
-
-        # filtra a pigmentos objetivo si se especifica
-        if target_pigments is not None:
-            subdf = subdf[subdf[balance_col].isin(target_pigments)]
-            if subdf.empty:
-                continue
-
-        # ids de pigmento a repartir
-        pigment_ids = (list(subdf[balance_col].dropna().unique())
-                       if target_pigments is None else list(sorted(target_pigments)))
-
-        k = max(1, len(pigment_ids))
-        base = lim // k
-
-        chosen = []
-        taken_idx = set()
-
-        # 1) cupo base por pigmento
-        for pid in pigment_ids:
-            g = subdf[subdf[balance_col] == pid]
-            n = min(base, len(g))
+    if quota_map:
+        for r in sorted(quota_map.keys()):
+            sub = df[df["Region"] == r]
+            n = min(len(sub), int(quota_map[r]))
             if n > 0:
-                pick = g.sample(n=n, random_state=seed)
-                chosen.append(pick)
-                taken_idx.update(pick.index.tolist())
-
-        # 2) completa hasta 'lim' con el remanente (si faltan)
-        need = lim - sum(len(c) for c in chosen)
-        if need > 0:
-            remaining = subdf.drop(index=list(taken_idx)) if taken_idx else subdf
-            if not remaining.empty:
-                extra_n = min(need, len(remaining))
-                chosen.append(remaining.sample(n=extra_n, random_state=seed))
-
-        if chosen:
-            parts.append(pd.concat(chosen, axis=0))
-
-    return pd.concat(parts, axis=0, ignore_index=True) if parts else df.head(0).copy()
-
-def build_strat_labels(y: np.ndarray, n_pigments: int) -> np.ndarray:
-    """
-    y: (N, n_pigments+4) one-hot por bloques.
-    Devuelve etiqueta entera para estratificar: pig*2 + is_mix (is_mix=0 si Pure, 1 si {Mixture1,2,3})
-    """
-    pig_idx = y[:, :n_pigments].argmax(axis=1)
-    mix_idx = y[:, n_pigments:n_pigments+4].argmax(axis=1)
-    is_mix = (mix_idx != 0).astype(int)
-    return pig_idx * 2 + is_mix  # [0..(2*n_pigments-1)]
-
-# =========================
-# Orquestador
-# =========================
-def main():
-    parser = argparse.ArgumentParser(description="Entrena modelos HSI especificados.")
-    parser.add_argument("--models", type=str, required=True)
-    parser.add_argument("--group-by", type=str, default=None,
-                        help="Columna para agrupar/limitar (ej: Region o Subregion).")
-    parser.add_argument("--per-group-limit-map", type=str, default=None,
-                        help="Límites por grupo, p.ej. '1=300,2=100,3=100,4=100'.")
-    parser.add_argument("--trials", type=int, default=None)
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--outputs-dir", type=str, default=None)
-    parser.add_argument("--regions", type=str, default="", help="Filtro, p.ej. '1,2'.")
-    parser.add_argument("--subregions", type=str, default="", help="Filtro, p.ej. '1,2,3,4'.")
-    args = parser.parse_args()
-
-    out_dir = ensure_outputs_dir(args.outputs_dir, variables.get("outputs_dir"))
-    csv_full  = os.path.join(out_dir, "dataframe.csv")
-
-    # ---- carga + dataframe principal ----
-    processor = HSIDataProcessor(variables)
-    processor.load_h5_files()
-    df = processor.dataframe()
-    log_df_info("DF (antes de filtros/limites)", df)
-
-    # ---- filtros CLI opcionales ----
-    if args.regions and "Region" in df.columns:
-        keep = {int(x) for x in args.regions.split(",") if x.strip()}
-        df = df[df["Region"].isin(keep)].copy()
-    if args.subregions and "Subregion" in df.columns:
-        keep = {int(x) for x in args.subregions.split(",") if x.strip()}
-        df = df[df["Subregion"].isin(keep)].copy()
-
-    # seguridad: solo 1..4 si existe Region
-    if "Region" in df.columns:
-        df = df[df["Region"].isin([1, 2, 3, 4])].copy()
-
-    # ---- límites por grupo en DF principal (balanceado por pigmento) ----
-    limit_map_raw = parse_limit_map(args.per_group_limit_map)
-    target_group_col = args.group_by or ("Region" if limit_map_raw else None)
-
-    if target_group_col and limit_map_raw:
-        if target_group_col not in df.columns:
-            raise ValueError(f"Columna '{target_group_col}' no existe en el DataFrame.")
-        if np.issubdtype(df[target_group_col].dtype, np.integer):
-            limit_map = {int(k): int(v) for k, v in limit_map_raw.items()}
-        else:
-            limit_map = {str(k): int(v) for k, v in limit_map_raw.items()}
-
-        before = len(df)
-        print(f"[LIMIT] group-by='{target_group_col}', limit_map={limit_map} "
-              f"(dtype col={df[target_group_col].dtype})")
-
-        df = sample_by_region_balanced(
-            df,
-            region_col=target_group_col,
-            limit_map=limit_map,
-            balance_col="Pigment Index",
-            num_files=int(variables.get("num_files", 4)),   # ← balancea 0..num_files-1
-            seed=int(variables.get("seed", 42)),
-        )
-
-        after = len(df)
-        print(f"[INFO] Aplicado group-by='{target_group_col}' (balanceado por pigmento). Filas: {before} -> {after}")
+                idx = rng.choice(sub.index.to_numpy(), size=n, replace=False)
+                parts.append(df.loc[idx])
+    elif per_region is not None:
+        for _, sub in df.groupby("Region"):
+            n = min(len(sub), int(per_region))
+            if n > 0:
+                idx = rng.choice(sub.index.to_numpy(), size=n, replace=False)
+                parts.append(df.loc[idx])
     else:
-        print("[INFO] Sin límites por grupo (no se pasó --per-group-limit-map).")
+        return df
 
-    # ---- log y guardado del DF FINAL ----
-    log_df_info("DF (final, tras filtros/limites)", df)
-    df.to_csv(csv_full, index=False)
-    print(f"[OK] Guardado dataframe (final): {csv_full}")
+    out = pd.concat(parts, axis=0) if parts else df.iloc[0:0]
+    return out.sample(frac=1.0, random_state=seed).reset_index(drop=True)
 
-    # ---- matrices X/y (sin normalizar) ----
-    multi = np.array([np.array(label) for label in df["Multi"]], dtype=np.float32)
-    num_classes = multi.shape[1]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Construcción X/y (no toca representación)
+# ─────────────────────────────────────────────────────────────────────────────
+def build_Xy(df: pd.DataFrame):
+    """
+    X: columnas espectrales 'vis_*' y 'swir_*' ordenadas (vis primero).
+    y: vector Multi tal cual (pigmentos + 4 mixtures).
+    """
     spec_cols = [c for c in df.columns if c.startswith(("vis_", "swir_"))]
     if not spec_cols:
-        raise ValueError("No spectral columns found starting with 'vis_' or 'swir_'.")
+        raise ValueError("No spectral columns starting with 'vis_' or 'swir_'.")
     spec_cols = sorted(spec_cols, key=lambda c: (0 if c.startswith("vis_") else 1, c))
-    X_mat = df[spec_cols].astype(np.float32).fillna(0.0).values  # (N, L)
-    y_mat = multi                                                 # (N, C)
-    input_len = X_mat.shape[1]
-    num_files = int(variables["num_files"])
+    X = df[spec_cols].astype(np.float32).fillna(0.0).values[..., np.newaxis]
+    y = np.array([np.array(v) for v in df["Multi"]], dtype=np.float32)
+    return X, y, X.shape[1]
 
-    # ---- etiquetas para estratificar por (pigmento, pure/mixture) ----
-    y_strat = build_strat_labels(y_mat, n_pigments=num_files)
 
-    # ---- split estratificado: 70% trainval / 30% test ----
-    sss1 = StratifiedShuffleSplit(n_splits=1, test_size=0.30, random_state=42)
-    trainval_idx, test_idx = next(sss1.split(X_mat, y_strat))
-    X_trainval, X_test = X_mat[trainval_idx], X_mat[test_idx]
-    y_trainval, y_test = y_mat[trainval_idx], y_mat[test_idx]
-    y_strat_trainval   = y_strat[trainval_idx]
+# ─────────────────────────────────────────────────────────────────────────────
+# Split por (File, Mixture) + estratificación por pigmento
+# ─────────────────────────────────────────────────────────────────────────────
+def pigment_ids(df: pd.DataFrame, vars_: dict) -> np.ndarray:
+    n_p = int(vars_["num_files"])
+    pig = []
+    for v in df["Multi"]:
+        a = np.asarray(v, dtype=np.float32)
+        pig.append(int(np.argmax(a[:n_p])))
+    return np.array(pig, dtype=int)
 
-    # ---- split estratificado: 50/50 dentro de trainval => 35% train / 35% val ----
-    sss2 = StratifiedShuffleSplit(n_splits=1, test_size=0.50, random_state=42)
-    train_idx, val_idx = next(sss2.split(X_trainval, y_strat_trainval))
-    X_train, X_val = X_trainval[train_idx], X_trainval[val_idx]
-    y_train, y_val = y_trainval[train_idx], y_trainval[val_idx]
 
-    print(f"[DATA] Split estratificado -> "
-          f"train: {X_train.shape}, val: {X_val.shape}, test: {X_test.shape}")
+def grouped_split_indices(df: pd.DataFrame, vars_: dict, test_frac=0.30, seed=42):
+    """
+    Garantiza al menos una muestra por (File, Mixture) en TEST y ~test_frac total.
+    El resto se divide en train/val con estratificación por pigmento.
+    """
+    if not {"File", "Mixture"}.issubset(df.columns):
+        raise ValueError("Necesito columnas 'File' y 'Mixture' para split por grupos.")
 
-    # en train.py, tras el split
-    from sklearn.preprocessing import StandardScaler
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val   = scaler.transform(X_val)
-    X_test  = scaler.transform(X_test)
+    keys = df[["File", "Mixture"]].astype(str).agg(" | ".join, axis=1).values
+    by_group = defaultdict(list)
+    for i, k in enumerate(keys):
+        by_group[k].append(i)
 
-    # añade canal
-    X_train = X_train[..., np.newaxis]
-    X_val   = X_val[..., np.newaxis]
-    X_test  = X_test[..., np.newaxis]
+    rng = np.random.default_rng(seed)
+    idx_test, pool = [], []
+    for _, idxs in by_group.items():
+        idx_test.append(idxs[0])
+        pool.extend([j for j in idxs if j != idxs[0]])
 
-    print(f"[DATA] Espectrales: #{input_len}  | X_train: {X_train.shape}  y_train: {y_train.shape}  num_classes: {num_classes}")
+    desired = int(test_frac * len(df))
+    need_extra = max(0, min(desired - len(idx_test), len(pool)))
+    if need_extra > 0:
+        idx_test = np.unique(
+            np.concatenate([idx_test, rng.choice(pool, size=need_extra, replace=False)])
+        ).tolist()
 
-    # ---- modelos a entrenar ----
+    mask = np.ones(len(df), dtype=bool)
+    mask[idx_test] = False
+    idx_rest = np.where(mask)[0]
+
+    y_pig = pigment_ids(df, vars_)
+    y_rest = y_pig[idx_rest]
+
+    idx_train_rel, idx_val_rel = train_test_split(
+        np.arange(len(idx_rest)), test_size=0.2, random_state=seed, stratify=y_rest
+    )
+    idx_train = idx_rest[idx_train_rel]
+    idx_val = idx_rest[idx_val_rel]
+    return np.asarray(idx_train), np.asarray(idx_val), np.asarray(idx_test)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model loader
+# ─────────────────────────────────────────────────────────────────────────────
+def import_model_trainer(name: str):
+    """
+    Devuelve la función tune_and_train para el modelo 'name'.
+    Debe tener firma:
+      tune_and_train(X_train, y_train, X_val, y_val, *, input_len, num_classes, ...)
+    y devolver (model, study, best) o solo model.
+    """
+    if name == "cnn_baseline":
+        return tune_and_train_default  # si tienes un baseline in-tree
+    mod = __import__(f"hsi_lab.models.{name}", fromlist=["tune_and_train"])
+    return getattr(mod, "tune_and_train")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI & main
+# ─────────────────────────────────────────────────────────────────────────────
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Train HSI models y guardar CMs (4N, 2N y 2) sin cambiar representación."
+    )
+    p.add_argument("--outputs-dir", type=str, default=None)
+    p.add_argument("--models", type=str, required=True,
+                   help="Lista separada por comas (ej: cnn_baseline,otro)")
+    # Selección rápida por región
+    p.add_argument("--per-region", type=int, default=None,
+                   help="Tomar N filas por cada región (muestreo uniforme).")
+    p.add_argument("--region-quota", type=str, default=None,
+                   help='Cupos por región, ej: "1:300,2:100,4:50"')
+    p.add_argument("--trials", type=int, default=None)
+    p.add_argument("--epochs", type=int, default=None)
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    out_dir = args.outputs_dir or variables.get("outputs_dir") or "outputs"
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 1) Cargar DF
+    pr = HSIDataProcessor(variables)
+    pr.load_h5_files()
+    df = pr.dataframe()
+
+    # 2) (Opcional) muestreo por región SIN reequilibrar
+    quota_map = parse_region_quota(args.region_quota) if args.region_quota else None
+    if args.per_region is not None or quota_map:
+        df = sample_per_region(
+            df,
+            per_region=args.per_region,
+            quota_map=quota_map,
+            seed=variables.get("seed", 42),
+        )
+    df.to_csv(os.path.join(out_dir, "dataframe_used.csv"), index=False)
+
+    # 3) Split
+    idx_train, idx_val, idx_test = grouped_split_indices(
+        df, variables, test_frac=0.30, seed=variables.get("seed", 42)
+    )
+
+    # 4) X/y
+    X, y, input_len = build_Xy(df)
+    X_train, X_val, X_test = X[idx_train], X[idx_val], X[idx_test]
+    y_train, y_val, y_test = y[idx_train], y[idx_val], y[idx_test]
+    print(f"[DATA] input_len={input_len} | X_train={X_train.shape} | "
+          f"X_val={X_val.shape} | X_test={X_test.shape}")
+
+    # 5) Entrenar y evaluar
     model_names = [m.strip() for m in args.models.split(",") if m.strip()]
-    trained_models = {}
-
     for name in model_names:
         print(f"[TRAIN] {name}")
-        mod = load_model_module(name)
-        model, study, best = mod.tune_and_train(
+        tune = import_model_trainer(name)
+
+        res = tune(
             X_train, y_train, X_val, y_val,
-            input_len=input_len,
-            num_classes=num_classes,
-            trials=args.trials,   # None -> usa variables['trials']
-            epochs=args.epochs,   # None -> usa variables['epochs']
+            input_len=input_len, num_classes=y.shape[1],
+            trials=args.trials if args.trials is not None else variables.get("trials"),
+            epochs=args.epochs if args.epochs is not None else variables.get("epochs"),
             n_jobs=variables.get("optuna_n_jobs", 1),
             seed=variables.get("seed", 42),
         )
-        trained_models[name] = model
+        model = res[0] if isinstance(res, tuple) else res
 
-    # ---- evaluación: matrices, tablas y métricas ----
-    pigment_names = [f"Pigment {i+1}" for i in range(num_files)]
-    cm_dir = os.path.join(out_dir, "conf_mats")
-    tables_dir = os.path.join(out_dir, "tables")
-    os.makedirs(cm_dir, exist_ok=True)
-    os.makedirs(tables_dir, exist_ok=True)
+        # Predicciones de test (probabilidades)
+        y_pred_prob = model.predict(X_test, verbose=0)
+        if not isinstance(y_pred_prob, np.ndarray):
+            y_pred_prob = np.concatenate(y_pred_prob, axis=1)
 
-    for name, model in trained_models.items():
-        # 1) Predicción
-        y_pred_out = model.predict(X_test, verbose=0)
+        # Directorio de salidas por modelo
+        sub_out = os.path.join(out_dir, name)
+        os.makedirs(os.path.join(sub_out, "conf_mats"), exist_ok=True)
 
-        # 2) Unifica a (N, num_files+4)
-        if isinstance(y_pred_out, (list, tuple)):
-            pig_prob, mix_prob = y_pred_out
-            y_pred_concat = np.concatenate([pig_prob, mix_prob], axis=1)
-        else:
-            y_pred_concat = y_pred_out
-
-        # 3) PNGs de matrices de confusión
-        save_confusion_pngs(
+        # 4N, 2N y 2 vistas (formato bonito definido en report.py)
+        cm_pigment_mix4N(
             y_true=y_test,
-            y_pred=y_pred_concat,
-            pigment_names=pigment_names,
-            out_dir=cm_dir,
-            prefix=name
+            y_pred=y_pred_prob,
+            out_path=os.path.join(sub_out, "conf_mats", f"{name}_cm_GLOBAL_4CASES.png"),
+        )
+        cm_pigment_mix2N(
+            y_true=y_test,
+            y_pred=y_pred_prob,
+            out_path=os.path.join(sub_out, "conf_mats", f"{name}_cm_GLOBAL.png"),
+        )
+        cm_mix_global2(
+            y_true=y_test,
+            y_pred=y_pred_prob,
+            out_path=os.path.join(sub_out, "conf_mats", f"{name}_cm_MIXTURE.png"),
         )
 
-        # 4) Tabla global (CSV)
-        csv_table = os.path.join(tables_dir, f"{name}_global_table.csv")
-        export_global_table(
-            y_true=y_test,
-            y_pred=y_pred_concat,
-            pigment_names=pigment_names,
-            out_csv=csv_table
-        )
-
-        # 5) Métricas (dict) + resumen CSV
-        metrics = evaluation_metrics(
-            y_true=y_test,
-            y_pred=y_pred_concat,
-            pigment_names=pigment_names,
-            threshold=0.5,
-            save_table_path=os.path.join(tables_dir, f"{name}_per_sample_scores.csv"),
-            print_report=False
-        )
-        metrics_csv = os.path.join(tables_dir, f"{name}_metrics_summary.csv")
-        metrics_light = {k: v for k, v in metrics.items()
-                         if k not in ("table", "pigment_names", "mix_names")}
-        pd.DataFrame([metrics_light]).to_csv(metrics_csv, index=False)
-
-        print(f"[OK] Matrices de confusión -> {cm_dir}")
-        print(f"[OK] Tabla global -> {csv_table}")
-        print(f"[OK] Métricas resumen -> {metrics_csv}")
 
 if __name__ == "__main__":
     main()
-
-

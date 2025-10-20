@@ -17,8 +17,8 @@ class HSIDataProcessor:
         self.binary_representations = {}
         self.Pigment_nom = None
         self.start_index = variables['start_index']
-        self.num_files = variables['num_files']                  # nº de pigmentos (bits)
-        self.selected_regions = variables['selected_regions']    # lista de ints o []
+        self.num_files = variables['num_files']                  
+        self.selected_regions = variables['selected_regions']    
         self.selected_subregions = variables['selected_subregions']
         self.data_type = variables['data_type']
         self.points = [(21, 9), (81, 9), (81, 32), (47, 47), (20, 60), (60, 68), (85, 75), (20, 90), (90, 93)]
@@ -28,10 +28,9 @@ class HSIDataProcessor:
         self.mixture_columns = variables['mixture_columns']
         self.all_pigment_columns = pd.read_csv(self.excel_file)['Title'].tolist()
         self.meta_label_map = variables['meta_label_map']
-        self.mixture_mapping = variables['mixture_mapping']      # dict: bits -> nombre
+        self.mixture_mapping = variables['mixture_mapping']     
         self.pigments_mapping = {}
         self._multi_to_label = None
-        # copia limpia de algunos dicts
         self.variables = variables.copy()
         self.variables["mixture_columns"] = {
             int(k): v for k, v in self.variables.get("mixture_columns", {}).items()
@@ -177,6 +176,11 @@ class HSIDataProcessor:
             ys_idx, xs_idx = np.nonzero(mask)
             if len(ys_idx) == 0:
                 continue
+            # MUESTREO opcional para acelerar (cada k píxeles)
+            sample_every = int(os.getenv("HSI_SAMPLE_EVERY", "0"))  # 0 = sin muestreo
+            if sample_every > 1:
+                ys_idx = ys_idx[::sample_every]
+                xs_idx = xs_idx[::sample_every]
 
             for y, x in zip(ys_idx, xs_idx):
                 v = data[y, x, :]
