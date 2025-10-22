@@ -407,3 +407,40 @@ class HSIDataProcessor:
             ).drop(columns=["_FileNum"]).reset_index(drop=True)
 
         return df_out
+
+    def save_rows_for_file(self, target_file: str, out_csv_path: str):
+        df = self.dataframe()
+        df_t = df[df["File"] == target_file]
+        if df_t.empty:
+            print(f"[WARN] No hay filas para File == {target_file}")
+            return None
+        # Asegura carpeta
+        os.makedirs(os.path.dirname(out_csv_path) or ".", exist_ok=True)
+        df_t.to_csv(out_csv_path, index=False)
+        print(f"[OK] Guardado {len(df_t)} filas en: {out_csv_path}")
+        return out_csv_path
+
+TARGET_FILE = "18_Egyptian_blue_GA_10060.h5"
+OUT_CSV = "/home/pgimenez/projects/HSI/hsi_lab/data/18_Egyptian_blue_GA_10060_rows.csv"
+
+proc = HSIDataProcessor(variables)
+proc.load_h5_files()
+proc.save_rows_for_file(TARGET_FILE, OUT_CSV)
+
+print("data_type =", variables.get("data_type"))
+
+proc = HSIDataProcessor(variables)
+proc.load_h5_files()
+h5 = proc.all_data.get("18_Egyptian_blue_GA_10060.h5")
+print("H5 keys:", list(h5.keys()))
+
+for t in ["vis","swir"]:
+    if t in h5:
+        print(t, "-> datasets:", list(h5[t].keys()))
+    else:
+        print(t, "NO existe como grupo en el H5")
+
+df = proc.dataframe()
+print("Cols espectrales ejemplo:",
+      [c for c in df.columns if c.startswith("vis_") or c.startswith("swir_")][:10])
+print("Filas de ese File:", (df["File"]=="18_Egyptian_blue_GA_10060.h5").sum())
