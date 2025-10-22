@@ -18,11 +18,6 @@ from hsi_lab.eval.report import plot_confusion_matrix
 # Carga dinámica del trainer
 # ─────────────────────────────────────────────────────────────────────────────
 def import_model_trainer(name: str):
-    """
-    Carga una función `tune_and_train` desde:
-      - el módulo exacto si `name` contiene puntos (p.ej. "pkg.subpkg.mod"), o
-      - "hsi_lab.models.<name>" si es un alias corto (p.ej. "DNN").
-    """
     candidates = [name] if "." in name else []
     candidates.append(f"hsi_lab.models.{name}")
     last_err = None
@@ -37,15 +32,10 @@ def import_model_trainer(name: str):
         f"Último error: {last_err}"
     )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Features/targets
 # ─────────────────────────────────────────────────────────────────────────────
 def build_Xy(df: pd.DataFrame):
-    """
-    X: columnas espectrales 'vis_*' y 'swir_*' (vis primero), float32, shape (N, F, 1)
-    y: vector Multi tal cual (pigmentos + 4 mixtures), float32
-    """
     spec_cols = [c for c in df.columns if c.startswith(("vis_", "swir_"))]
     if not spec_cols:
         raise ValueError("No spectral columns starting with 'vis_' or 'swir_'.")
@@ -72,12 +62,6 @@ def balanced_test_split_by_pigment_mixture(
     per_mix: int = 2,
     seed: int = 42
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    1) Selecciona un TEST balanceado: exactamente `k` filas por cada (Pigment Index, Mixture),
-       con k = min(per_mix, min_count_por_grupo). Si k < 2, avisa pero sigue.
-    2) Del resto hace split Train/Val con proporción 70/15 respecto al total (test ya fijado).
-    Estratifica Train/Val por pigmento.
-    """
     rng = np.random.default_rng(seed)
 
     # --- índices por (Pigment, Mixture) ---
@@ -128,9 +112,6 @@ def stratified_split_70_15_15(
     vars_: dict,
     seed: int = 42
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Alternativa sin balanceo por mezcla: estratifica por pigmento y divide 70/15/15.
-    """
     y_pig = pigment_ids(df, vars_)
     idx_all = np.arange(len(df))
     idx_train, idx_tmp = train_test_split(idx_all, test_size=0.30, random_state=seed, stratify=y_pig)
@@ -172,11 +153,6 @@ def export_splits_csv(
     out_dir: str,
     vars_: dict,
 ) -> Dict[str, str]:
-    """
-    Crea CSVs: train/val/test (ordenados por 'File'), índices sueltos y all_splits.csv.
-    Incluye columnas decodificadas de y_true/y_pred (2N y 4N). Soporta predicciones
-    sólo en test: deja y_pred_* vacíos en train/val.
-    """
     os.makedirs(out_dir, exist_ok=True)
 
     n_p = int(vars_["num_files"])
@@ -255,7 +231,6 @@ def export_splits_csv(
 
     return paths
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,13 +258,6 @@ def main():
     pr = HSIDataProcessor(variables)
     pr.load_h5_files()
     df = pr.dataframe()
-
-    # Guardar dataframe usado
-    datasets_dir = os.path.join(out_dir, "datasets")
-    os.makedirs(datasets_dir, exist_ok=True)
-    df_used_path = os.path.join(datasets_dir, "dataframe_used.csv")
-    df.to_csv(df_used_path, index=False)
-    print(f"[SAVE] DataFrame usado -> {df_used_path}")
 
     # 2) Split
     if variables.get("balance_test_by_mixture", True):
@@ -388,6 +356,12 @@ def main():
 
         # === CSVs de splits e índices (ordenados por File) ===
         csv_out_dir = os.path.join(out_dir, name, "datasets")
+        os.makedirs(csv_out_dir, exist_ok=True)
+
+        # --- Guardar el dataframe usado en la MISMA carpeta ---
+        df_used_path = os.path.join(csv_out_dir, "dataframe_used.csv")
+        df.to_csv(df_used_path, index=False)
+        print(f"[SAVE] DataFrame usado -> {df_used_path}")
 
         # Construye y_pred_prob_full del tamaño total y rellena sólo TEST
         y_pred_prob_full = np.full_like(y, fill_value=np.nan, dtype=np.float32)
