@@ -2,6 +2,7 @@ import os
 import argparse
 import importlib
 from collections import defaultdict
+from typing import Tuple, Dict
 
 import numpy as np
 import pandas as pd
@@ -11,7 +12,6 @@ from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from hsi_lab.data.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval.report import plot_confusion_matrix
-from typing import Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,6 +123,22 @@ def balanced_test_split_by_pigment_mixture(
 
     return np.asarray(idx_train), np.asarray(idx_val), np.asarray(idx_test)
 
+def stratified_split_70_15_15(
+    df: pd.DataFrame,
+    vars_: dict,
+    seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Alternativa sin balanceo por mezcla: estratifica por pigmento y divide 70/15/15.
+    """
+    y_pig = pigment_ids(df, vars_)
+    idx_all = np.arange(len(df))
+    idx_train, idx_tmp = train_test_split(idx_all, test_size=0.30, random_state=seed, stratify=y_pig)
+    y_tmp = y_pig[idx_tmp]
+    idx_val, idx_test = train_test_split(idx_tmp, test_size=0.5, random_state=seed, stratify=y_tmp)
+    return np.asarray(idx_train), np.asarray(idx_val), np.asarray(idx_test)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoders SIN threshold (solo argmax para etiquetar)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,11 +160,108 @@ def decode_mix_group(y_like: np.ndarray, n_p: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Exportación de splits e índices a CSV (ordenados por File)
+# ─────────────────────────────────────────────────────────────────────────────
+def export_splits_csv(
+    df: pd.DataFrame,
+    y_true: np.ndarray,
+    y_pred_prob: np.ndarray,   # puede venir con NaNs en train/val o incluso ser None
+    idx_train: np.ndarray,
+    idx_val: np.ndarray,
+    idx_test: np.ndarray,
+    out_dir: str,
+    vars_: dict,
+) -> Dict[str, str]:
+    """
+    Crea CSVs: train/val/test (ordenados por 'File'), índices sueltos y all_splits.csv.
+    Incluye columnas decodificadas de y_true/y_pred (2N y 4N). Soporta predicciones
+    sólo en test: deja y_pred_* vacíos en train/val.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    n_p = int(vars_["num_files"])
+    N, D = y_true.shape
+
+    # y_pred_prob puede ser None → creamos un array lleno de NaN del mismo tamaño
+    if y_pred_prob is None:
+        y_pred_prob = np.full((N, D), np.nan, dtype=np.float32)
+
+    # --- Decodificación de y_true (completa) ---
+    y_true_2N = decode_pigment_and_group(y_true, n_p)
+    y_true_4N = decode_pigment_and_mix4(y_true, n_p)
+
+    # --- Decodificación de y_pred (solo filas válidas; el resto queda vacío) ---
+    def safe_decode(decoder_fn, y_like):
+        out = np.array([""] * len(y_like), dtype=object)  # vacío por defecto
+        # Una fila es válida si todas sus posiciones son finitas (sin NaN/inf)
+        valid = np.isfinite(y_like).all(axis=1)
+        if valid.any():
+            out[valid] = decoder_fn(y_like[valid], n_p)
+        return out
+
+    y_pred_2N = safe_decode(decode_pigment_and_group, y_pred_prob)
+    y_pred_4N = safe_decode(decode_pigment_and_mix4,  y_pred_prob)
+
+    def split_pm(lbl_4n: str):
+        if not lbl_4n:  # vacío → devuelve vacíos
+            return "", ""
+        px, m = lbl_4n.split("_", 1)
+        return px, m
+
+    pig_true, mix_true = zip(*[split_pm(s) for s in y_true_4N])
+    pig_pred, mix_pred = zip(*[split_pm(s) for s in y_pred_4N])
+
+    # DF maestro (train/val/test concatenados, con tag de split)
+    idx_all = np.concatenate([idx_train, idx_val, idx_test])
+    split_tag = np.array(["train"] * len(idx_train) + ["val"] * len(idx_val) + ["test"] * len(idx_test))
+
+    base = df.iloc[idx_all].copy()
+    base = base.assign(
+        split = split_tag,
+        y_true_2N = y_true_2N[idx_all],
+        y_pred_2N = y_pred_2N[idx_all],
+        y_true_4N = y_true_4N[idx_all],
+        y_pred_4N = y_pred_4N[idx_all],
+        pig_true  = np.array(pig_true, dtype=object)[idx_all],
+        mix_true  = np.array(mix_true, dtype=object)[idx_all],
+        pig_pred  = np.array(pig_pred, dtype=object)[idx_all],
+        mix_pred  = np.array(mix_pred, dtype=object)[idx_all],
+    )
+
+    # Guardado de cada split ordenado por File
+    paths = {}
+    def save_subset(name: str):
+        d = base.loc[base["split"] == name].sort_values("File")
+        path = os.path.join(out_dir, f"{name}.csv")
+        d.to_csv(path, index=False)
+        paths[name] = path
+
+    save_subset("train")
+    save_subset("val")
+    save_subset("test")
+
+    # Maestro
+    path_all = os.path.join(out_dir, "all_splits.csv")
+    base.sort_values(["split", "File"]).to_csv(path_all, index=False)
+    paths["all_splits"] = path_all
+
+    # Índices sueltos
+    pd.DataFrame({"index": np.sort(idx_train)}).to_csv(os.path.join(out_dir, "idx_train.csv"), index=False)
+    pd.DataFrame({"index": np.sort(idx_val)}).to_csv(os.path.join(out_dir, "idx_val.csv"), index=False)
+    pd.DataFrame({"index": np.sort(idx_test)}).to_csv(os.path.join(out_dir, "idx_test.csv"), index=False)
+    paths["idx_train"] = os.path.join(out_dir, "idx_train.csv")
+    paths["idx_val"]   = os.path.join(out_dir, "idx_val.csv")
+    paths["idx_test"]  = os.path.join(out_dir, "idx_test.csv")
+
+    return paths
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Train HSI models + export CMs (4N, 2N, 2). No thresholds; split estratificado 70/15/15."
+        description="Train HSI models + export CMs (4N, 2N, 2) y CSVs de splits (ordenados por File)."
     )
     p.add_argument("--outputs-dir", type=str, default=None)
     p.add_argument("--models", type=str, required=True,
@@ -190,7 +303,6 @@ def main():
         idx_train, idx_val, idx_test = stratified_split_70_15_15(
             df, variables, seed=variables.get("seed", 42)
         )
-
 
     # 3) X/y
     X, y, input_len = build_Xy(df)
@@ -274,7 +386,25 @@ def main():
             os.path.join(sub_out, f"{name}_cm_MIXTURE.png")
         )
 
+        # === CSVs de splits e índices (ordenados por File) ===
+        csv_out_dir = os.path.join(out_dir, name, "datasets")
+
+        # Construye y_pred_prob_full del tamaño total y rellena sólo TEST
+        y_pred_prob_full = np.full_like(y, fill_value=np.nan, dtype=np.float32)
+        y_pred_prob_full[idx_test] = y_pred_prob  # preds sólo para test
+
+        paths = export_splits_csv(
+            df=df,
+            y_true=y,
+            y_pred_prob=y_pred_prob_full,
+            idx_train=idx_train,
+            idx_val=idx_val,
+            idx_test=idx_test,
+            out_dir=csv_out_dir,
+            vars_=variables,
+        )
+        print(f"[SAVE] CSV splits -> {paths}")
+
 
 if __name__ == "__main__":
     main()
-
