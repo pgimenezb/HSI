@@ -1,11 +1,11 @@
 variables = {
-    "data_folder": "/home/pgimenez/database",
-    "excel_file": "/home/pgimenez/database/noms_fichiers.csv",
+    "data_folder": "/home/pgimenez/projects/HSI/database",
+    "excel_file": "/home/pgimenez/projects/HSI/database/noms_fichiers.csv",
 
     "data_type": ["vis", "swir"],
     "start_index": 0,
     # nº de pigmentos (bits delante de Multi)
-    "num_files": 20,
+    "num_files": 21,
 
     # sin filtros por defecto
     "selected_regions": [],
@@ -63,7 +63,7 @@ variables = {
 
     "outputs_dir": "outputs",
     "models_dir":  "outputs",
-    "model_list": ["cnn_baseline","cnn_dilated","cnn_residual", "dnn_baseline","dnn_selu","dnn_wide"],
+    "model_list": ["cnn_baseline","cnn_dilated","cnn_residual", "dnn_baseline","dnn_selu","dnn_wide", "DNN"],
 
     "trials": 50,
     "epochs": 50,
