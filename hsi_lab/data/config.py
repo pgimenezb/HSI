@@ -74,4 +74,6 @@ variables = {
     "region_row_quota": {1:300, 2:100, 3:100, 4:100},  # o {}
     "subregion_row_quota": {},                          # si lo usas, tiene prioridad
     "balance_seed": 42,
+    "test_per_mixture": 2,          # cuántas filas por (Pigment, Mixture) en test
+    "balance_test_by_mixture": True # activa el test balanceado por mezcla
     }

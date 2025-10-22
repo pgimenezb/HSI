@@ -11,6 +11,7 @@ from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from hsi_lab.data.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval.report import plot_confusion_matrix
+from typing import Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,24 +66,62 @@ def pigment_ids(df: pd.DataFrame, vars_: dict) -> np.ndarray:
         pig.append(int(np.argmax(a[:n_p])))
     return np.array(pig, dtype=int)
 
-
-def stratified_split_70_15_15(df: pd.DataFrame, vars_: dict, seed=42):
+def balanced_test_split_by_pigment_mixture(
+    df: pd.DataFrame,
+    vars_: dict,
+    per_mix: int = 2,
+    seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Estratifica por pigmento: 70% train, 15% val, 15% test del TOTAL.
+    1) Selecciona un TEST balanceado: exactamente `k` filas por cada (Pigment Index, Mixture),
+       con k = min(per_mix, min_count_por_grupo). Si k < 2, avisa pero sigue.
+    2) Del resto hace split Train/Val con proporción 70/15 respecto al total (test ya fijado).
+    Estratifica Train/Val por pigmento.
     """
-    y_pig = pigment_ids(df, vars_)
-    idx_all = np.arange(len(df))
+    rng = np.random.default_rng(seed)
 
-    # Train (70%) vs Temp (30%)
-    idx_train, idx_temp, y_train, y_temp = train_test_split(
-        idx_all, y_pig, test_size=0.30, random_state=seed, stratify=y_pig
+    # --- índices por (Pigment, Mixture) ---
+    grp = df.groupby(["Pigment Index", "Mixture"], sort=False).indices
+    counts = {k: len(v) for k, v in grp.items()}
+
+    if not counts:
+        raise ValueError("No hay grupos (Pigment Index, Mixture) para construir el test.")
+
+    k_common = min(per_mix, min(counts.values()))
+    if k_common <= 0:
+        raise ValueError(
+            "Algún (Pigment, Mixture) no tiene filas. Revisa cuotas/filtros en processor."
+        )
+    if k_common < per_mix:
+        print(f"[WARN] Bajando test_per_mixture de {per_mix} a {k_common} "
+              f"por falta de filas en algún grupo.")
+
+    # --- SAMPLE TEST FIJO Y BALANCEADO ---
+    test_idx_list = []
+    for (p, m), idxs in grp.items():
+        idxs = np.array(list(idxs))
+        if len(idxs) <= k_common:
+            test_idx_list.append(idxs)
+        else:
+            test_idx_list.append(rng.choice(idxs, size=k_common, replace=False))
+    idx_test = np.concatenate(test_idx_list)
+    idx_test.sort()
+
+    # --- RESTO -> TRAIN/VAL (70/15 del total) ---
+    all_idx = np.arange(len(df))
+    mask = np.ones(len(df), dtype=bool)
+    mask[idx_test] = False
+    idx_rest = all_idx[mask]
+
+    # Queremos que al final aprox. 70/15/15 del TOTAL.
+    # Si TEST ocupa T, en el resto (R) usamos val_ratio = 0.15 / (0.70+0.15)
+    val_ratio = 0.15 / 0.85
+    y_rest_pig = pigment_ids(df.iloc[idx_rest], vars_)
+    idx_train, idx_val = train_test_split(
+        idx_rest, test_size=val_ratio, random_state=seed, stratify=y_rest_pig
     )
-    # Val vs Test (15/15): dividir temp en mitades estratificadas
-    idx_val, idx_test = train_test_split(
-        idx_temp, test_size=0.50, random_state=seed, stratify=y_temp
-    )
+
     return np.asarray(idx_train), np.asarray(idx_val), np.asarray(idx_test)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Decoders SIN threshold (solo argmax para etiquetar)
@@ -139,20 +178,19 @@ def main():
     df.to_csv(df_used_path, index=False)
     print(f"[SAVE] DataFrame usado -> {df_used_path}")
 
-    # 2) Split estratificado 70/15/15
-    idx_train, idx_val, idx_test = stratified_split_70_15_15(
-        df, variables, seed=variables.get("seed", 42)
-    )
+    # 2) Split
+    if variables.get("balance_test_by_mixture", True):
+        idx_train, idx_val, idx_test = balanced_test_split_by_pigment_mixture(
+            df,
+            variables,
+            per_mix=int(variables.get("test_per_mixture", 2)),
+            seed=variables.get("seed", 42),
+        )
+    else:
+        idx_train, idx_val, idx_test = stratified_split_70_15_15(
+            df, variables, seed=variables.get("seed", 42)
+        )
 
-    split_dir = os.path.join(datasets_dir, "splits")
-    os.makedirs(split_dir, exist_ok=True)
-    pd.Series(idx_train, name="idx_train").to_csv(os.path.join(split_dir, "idx_train.csv"), index=False)
-    pd.Series(idx_val,   name="idx_val").to_csv(  os.path.join(split_dir, "idx_val.csv"),   index=False)
-    pd.Series(idx_test,  name="idx_test").to_csv( os.path.join(split_dir, "idx_test.csv"),  index=False)
-    df.iloc[idx_train].to_csv(os.path.join(split_dir, "train.csv"), index=False)
-    df.iloc[idx_val].to_csv(  os.path.join(split_dir, "val.csv"),   index=False)
-    df.iloc[idx_test].to_csv( os.path.join(split_dir, "test.csv"),  index=False)
-    print(f"[SAVE] Splits -> {split_dir}")
 
     # 3) X/y
     X, y, input_len = build_Xy(df)
