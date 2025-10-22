@@ -68,7 +68,10 @@ variables = {
     "trials": 50,
     "epochs": 50,
 
-    # Si usas SQLite (optuna.db), mejor 1 para evitar bloqueos
-    "optuna_n_jobs": 1,
+    "optuna_n_jobs": 1,   # Si usas SQLite (optuna.db), mejor 1 para evitar bloqueos
     "n_jobs_models": 1,
-}
+
+    "region_row_quota": {1:300, 2:100, 3:100, 4:100},  # o {}
+    "subregion_row_quota": {},                          # si lo usas, tiene prioridad
+    "balance_seed": 42,
+    }

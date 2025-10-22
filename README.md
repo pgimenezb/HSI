@@ -110,6 +110,13 @@ qsub -v MODELS=cnn_baseline,GROUP_BY=Subregion,PER_GROUP_LIMIT=500 hsi_train.pbs
 #more than one model with row limit:
 qsub -v MODELS=cnn_baseline,cnn_residual,TRIALS=40,EPOCHS=60,OPTUNA_N_JOBS=4,REPORTS_FLAG=--reports hsi_train.pbs
 
+# sceen
+screen -r hsi_par
+#if:
+pgimenez@cyan:~$ screen -r hsi_par 
+There is a screen on: 1094269.hsi_par (14/10/25 14:40:50) (Attached)
+# then:
+screen -dr 1094269
 
 ## Save to Git
 cd ~/projects/HSI

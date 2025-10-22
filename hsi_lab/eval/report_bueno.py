@@ -1,25 +1,20 @@
-import os, numpy as np, matplotlib
+# report.py
+import os
+import numpy as np
+import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix as sk_confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix, ConfusionMatrixDisplay  
 from hsi_lab.data.config import variables
-import pandas as pd
-from sklearn.metrics import (
-    classification_report, accuracy_score, f1_score, precision_score, recall_score,
-    roc_auc_score, average_precision_score, log_loss, hamming_loss
-)
-def _split_heads(y, n_pig):
-    """y: (N, n_pig+4) -> (y_pig, y_mix)."""
-    return y[:, :n_pig], y[:, n_pig:n_pig+4]
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 def convert_materials(binary, pigment_map=None):
-    s = ''.join(map(str, binary))            # Normaliza a string
-    n = int(variables["num_files"])          # nº bits de pigmento
-    mmap = variables["mixture_mapping"]      # {'1000': 'Pure', ...}
-
+    s = ''.join(map(str, binary))    # Normalizes into string
+    n = int(variables["num_files"])  # nº bits pigment
+    mmap = variables["mixture_mapping"]
     pigments = s[:n]
-    mixture  = s[n:n+4]                      # 4 bits justo tras pigment
-
+    # binder = s[n:n+2]  # oculto
+    mixture  = s[n:n+4]  # 4 bits justo tras pigment
     pigment_name = (pigment_map or {}).get(pigments, "Pigment unknown")
     mixture_name = mmap.get(mixture, "Mixture unknown")
     return f"{pigment_name}, {mixture_name}"
@@ -27,396 +22,174 @@ def convert_materials(binary, pigment_map=None):
 def confusion_matrix(y_pred, y_test):
     pred_labels = [convert_materials(val) for val in y_pred.astype(int)]
     test_labels = [convert_materials(val) for val in y_test.astype(int)]
-    cm = sk_confusion_matrix(test_labels, pred_labels, labels=np.unique(test_labels))
-    cm_pct = cm.astype(float) / cm.sum(axis=1)[:, np.newaxis]
+    conf_matrix = sk_confusion_matrix(test_labels, pred_labels, labels=np.unique(test_labels))  # ← usa alias
+    conf_matrix_percent = conf_matrix.astype(float) / conf_matrix.sum(axis=1)[:, np.newaxis]
     print("Confusion matrix (normalized in %):")
-    print(np.round(cm_pct * 100, 2))
+    print(np.round(conf_matrix_percent * 100, 2))
 
-def _plot_confusion_matrix(y_true_idx, y_pred_idx, class_names, title, out_path=None, ax=None):
-    K = len(class_names)
-    cm = sk_confusion_matrix(y_true_idx, y_pred_idx, labels=list(range(K)))
-    with np.errstate(invalid="ignore", divide="ignore"):
-        cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
-    cm_norm = np.nan_to_num(cm_norm, nan=0.0)
+def confusion_matrix_per_material(y_pred, y_true, pigment_names, num_files, save_dir=None, prefix="model"):
+    classes = ["Pigment"] * num_files + ["Mixture"] * 4  # binder oculto
+    groups = {
+        "Pigment": range(num_files),
+        "Mixture": range(num_files, num_files + 4)       # ← FIX: eran indices erróneos
+    }
+    labels = {
+        "Pigment": pigment_names,
+        "Mixture": ["Pure", "Mixture1", "Mixture2", "Mixture3"]
+    }
+    for name_group, index in groups.items():
+        y_true_grp = y_true[:, index]
+        y_pred_grp = y_pred[:, index]
+        y_true_labels = y_true_grp.argmax(axis=1)
+        y_pred_labels = y_pred_grp.argmax(axis=1)
+        out_path = None
+        if save_dir:
+            out_path = os.path.join(save_dir, f"{prefix}_confusion_matrix_{name_group.lower()}.png")
+        plot_confusion_matrix(
+            y_true_labels,
+            y_pred_labels,
+            [labels[name_group][i] for i in range(len(index))],
+            title=f"Confusion matrix per {name_group}",
+            out_path=out_path
+        )
 
-    disp = ConfusionMatrixDisplay(cm_norm, display_labels=class_names)
-    disp.plot(cmap=plt.cm.Blues, ax=ax, colorbar=False)
-    plt.title(title)
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.xticks(rotation=80)
-    plt.tight_layout()
-    if out_path:
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        plt.savefig(out_path, dpi=180)
-        plt.close()
-    else:
-        plt.show()
+# === plot_confusion_matrix (1 decimal, muestra 0.0, más espacio) ===
+def plot_confusion_matrix(cm, classes, title, out_path,
+                   annotate_percent=False,      # mantenemos decimales 0.00–1.00
+                   cmap_name="Blues",
+                   figsize=None,
+                   min_font=5, max_font=11):    # rango auto del texto
 
+    n = len(classes)
 
-def _mixture_labels_from_config():
-    mmap = variables["mixture_mapping"]
-    order = ["1000", "0100", "0010", "0001"]
-    default = ["Mixture1", "Mixture2", "Mixture3", "Mixture4"]
-    labels = []
-    for i, b in enumerate(order):
-        labels.append(mmap.get(b, default[i]))
-    return labels
+    # 1) Tamaño de figura a partir de nº de clases (celda ~0.35")
+    if figsize is None:
+        cell = 0.35                     # ancho/alto por celda en pulgadas
+        side = max(8, min(36, cell * n))
+        figsize = (side, side)
 
-def confusion_matrix_per_material(y_pred, y_true, pigment_names, num_files, save_dir=None, prefix="model", legend_lines=None):
-    pig_true = y_true[:, :num_files]
-    pig_pred = y_pred[:, :num_files]
-    y_true_pig_idx = pig_true.argmax(axis=1)
-    y_pred_pig_idx = pig_pred.argmax(axis=1)
+    # 2) Figura compacta (constrained_layout elimina blancos)
+    fig, ax = plt.subplots(figsize=figsize, dpi=180, constrained_layout=True)
 
-    out_path = os.path.join(save_dir, f"{prefix}_cm_pigment.png") if save_dir else None
-    _plot_confusion_matrix(y_true_pig_idx, y_pred_pig_idx, pigment_names,
-                           "Confusion matrix per Pigment", out_path, legend_lines=legend_lines)
+    im = ax.imshow(cm, interpolation="nearest", cmap=cmap_name, vmin=0.0, vmax=1.0)
+    ax.set_title(title, fontsize=13, pad=8)
 
-    mix_true = y_true[:, num_files : num_files + 4]
-    mix_pred = y_pred[:, num_files : num_files + 4]
-    mix_names = ["Pure", "Mixture1", "Mixture2", "Mixture3"]
+    # ticks y etiquetas
+    ax.set_xticks(range(n)); ax.set_xticklabels(classes, rotation=90, fontsize=9)
+    ax.set_yticks(range(n)); ax.set_yticklabels(classes, fontsize=9)
+    ax.set_xlabel("Predicted", fontsize=11)
+    ax.set_ylabel("True", fontsize=11)
+    ax.tick_params(axis="x", which="major", pad=6)
+    ax.tick_params(axis="y", which="major", pad=4)
 
-    y_true_mix_idx = mix_true.argmax(axis=1)
-    y_pred_mix_idx = mix_pred.argmax(axis=1)
+    # 3) Colorbar estrecho pegado a la matriz (sin comer área)
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="3%", pad=0.3)
+    cb = fig.colorbar(im, cax=cax)
+    cb.ax.tick_params(labelsize=9)
 
-    out_path = os.path.join(save_dir, f"{prefix}_cm_mixture.png") if save_dir else None
-    _plot_confusion_matrix(y_true_mix_idx, y_pred_mix_idx, mix_names,
-                           "Confusion matrix per Mixture", out_path, legend_lines=legend_lines)
+    # 4) Celdas cuadradas y texto adaptativo
+    ax.set_aspect("equal", adjustable="box")
+    # Tamaño del texto: decrece con n, pero dentro de [min_font, max_font]
+    font_size = max(min_font, min(max_font, int(200 / max(n, 1))))
+    # Anotar TODAS las celdas con 2 decimales (sin símbolo %)
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            val = (cm[i, j] * 100.0) if annotate_percent else cm[i, j]
+            ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=font_size)
 
-def plot_confusion_global(y_true, y_pred, pigment_names, out_path,
-                          annotate_min=5.0, cmap="Blues"):
-    """
-    Matriz de confusión GLOBAL legible (porcentual por fila).
-    - annotate_min: sólo anota celdas con % >= este umbral.
-    """
-    n_pig = int(variables["num_files"])
-    yt_glob, yp_glob = _global_indices(y_true, y_pred, n_pig)
-    K = 2 * n_pig
-
-    cm = confusion_matrix(yt_glob, yp_glob, labels=np.arange(K))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        cm_pct = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100.0
-    cm_pct = np.nan_to_num(cm_pct, nan=0.0)
-
-    # tamaño dinámico: 0.38 in por etiqueta (cap a 22)
-    w = min(22, max(8, 0.38 * K))
-    h = min(22, max(8, 0.38 * K))
-    fig, ax = plt.subplots(figsize=(w, h))
-    im = ax.imshow(cm_pct, cmap=cmap, vmin=0, vmax=100)
-
-    class_names = _px_labels(n_pig)
-    ax.set_xticks(np.arange(K))
-    ax.set_yticks(np.arange(K))
-    ax.set_xticklabels(class_names, rotation=70, ha="right", fontsize=8)
-    ax.set_yticklabels(class_names, fontsize=8)
-
-    ax.set_title("Global (Pigment × {Pure/Mixture}) (%)")
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("True")
-
-    # anota sólo valores relevantes
-    for i in range(K):
-        for j in range(K):
-            v = cm_pct[i, j]
-            if v >= annotate_min:
-                ax.text(j, i, f"{v:.1f}", ha="center", va="center", fontsize=7)
-
-    # barra de color
-    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.set_ylabel("% por fila", rotation=90)
-
-    plt.tight_layout()
+    # 5) Guardar recortando el extra
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    plt.savefig(out_path, dpi=200)
+    fig.savefig(out_path, dpi=220, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
-
-    # leyenda de mapping Pxx -> nombre real (a parte)
-    legend_txt = os.path.splitext(out_path)[0] + "_legend.txt"
-    with open(legend_txt, "w", encoding="utf-8") as f:
-        for i, name in enumerate(pigment_names[:n_pig]):
-            f.write(f"P{i+1:02d}: {name}\n")
+    print(f"[OK] {title} -> {out_path}")
 
 
-def _derive_labels(y_mat, n_pig):
-    """
-    y_mat: (N, n_pig+4) con probabilidades o one-hot por bloques.
-    Devuelve:
-      yt_pig, yp_pig : indices [0..n_pig-1]
-      yt_mix, yp_mix : indices [0..3]
-      yt_global, yp_global : indices [0..2*n_pig-1] donde global = pig*2 + is_mix
-    """
-    n = y_mat.shape[1]
-    assert n == n_pig + 4, f"Esperaba n_pig+4 columnas, recibí {n}."
+# === Helpers de decodificación desde el vector Multi ===
+def _decode_pigment_and_group(y_like: np.ndarray, n_p: int):
+    pig = np.argmax(y_like[:, :n_p], axis=1)
+    mix_idx = np.argmax(y_like[:, n_p:n_p+4], axis=1)  # 0=Pure, 1..3=Mixtures
+    group = np.where(mix_idx==0, "Pure", "Mixture")
+    return np.array([f"P{p+1:02d}_{g}" for p,g in zip(pig, group)])
 
-    # y_mat puede ser “true”/one-hot o probabilidades predichas.
-    # Para TRUE usamos argmax igual (one-hot -> índice correcto).
-    pig = y_mat[:, :n_pig]
-    mix = y_mat[:, n_pig:n_pig+4]
+def _decode_pigment_and_mix4(y_like: np.ndarray, n_p: int):
+    pig = np.argmax(y_like[:, :n_p], axis=1)
+    mix_idx = np.argmax(y_like[:, n_p:n_p+4], axis=1)  # 0=Pure,1=M1,2=M2,3=M3
+    names = np.array(["Pure","M1","M2","M3"])
+    return np.array([f"P{p+1:02d}_{names[m]}" for p,m in zip(pig, mix_idx)])
 
-    idx_pig = pig.argmax(axis=1)
-    idx_mix = mix.argmax(axis=1)
-    is_mix = (idx_mix != 0).astype(int)   # 0: Pure, 1: {Mixture1,2,3}
-    global_idx = idx_pig * 2 + is_mix
-    return idx_pig, idx_mix, global_idx
+def _decode_mix_group(y_like: np.ndarray, n_p: int):
+    mix_idx = np.argmax(y_like[:, n_p:n_p+4], axis=1)
+    return np.where(mix_idx==0, "Pure", "Mixture")
 
-def _ensure_concat(y_pred_out, n_pig):
-    """Acepta (pig_prob, mix_prob) o ya-concatenado y devuelve (N, n_pig+4)."""
-    if isinstance(y_pred_out, (list, tuple)):
-        pig_prob, mix_prob = y_pred_out
-        return np.concatenate([pig_prob, mix_prob], axis=1)
-    return y_pred_out
+# === 2N: Pxx_{Pure,Mixture} ===
+def cm_pigment_mix2N(y_true: np.ndarray, y_pred: np.ndarray, out_path: str):
+    n_p = int(variables["num_files"])
+    y_true_lbl = _decode_pigment_and_group((y_true > 0.5).astype(int), n_p)
+    y_pred_lbl = _decode_pigment_and_group(y_pred, n_p)
+    classes = [f"P{i+1:02d}_Pure" for i in range(n_p)] + [f"P{i+1:02d}_Mixture" for i in range(n_p)]
+    idx = {c:i for i,c in enumerate(classes)}
+    ti = np.array([idx.get(x,-1) for x in y_true_lbl]); pi = np.array([idx.get(x,-1) for x in y_pred_lbl])
+    mask = (ti>=0)&(pi>=0)
+    cm = sk_confusion_matrix(ti[mask], pi[mask], labels=list(range(len(classes))), normalize='true')
+    plot_confusion_matrix(cm, classes, "Global (Pigment + Pure/Mixture)", out_path)
 
-def save_confusion_pngs(y_true, y_pred, pigment_names, out_dir, prefix="model"):
-    n_pig = int(variables["num_files"])
-    pig_true, mix_true = _split_heads(y_true, n_pig)
-    pig_pred, mix_pred = _split_heads(y_pred, n_pig)
+# === 4N: Pxx_{Pure,M1,M2,M3} ===
+def cm_pigment_mix4N(y_true: np.ndarray, y_pred: np.ndarray, out_path: str, present_only: bool=False):
+    n_p = int(variables["num_files"])
+    y_true_lbl = _decode_pigment_and_mix4((y_true > 0.5).astype(int), n_p)
+    y_pred_lbl = _decode_pigment_and_mix4(y_pred, n_p)
+    classes_full = [f"P{i+1:02d}_{s}" for i in range(n_p) for s in ["Pure","M1","M2","M3"]]
+    vc_true = (lambda s: s.reindex(classes_full, fill_value=0))( 
+        __import__("pandas").Series(y_true_lbl).value_counts()
+    )
+    classes = [c for c in classes_full if vc_true[c] > 0] if present_only else classes_full
+    idx = {c:i for i,c in enumerate(classes_full)}
+    ti = np.array([idx.get(x,-1) for x in y_true_lbl]); pi = np.array([idx.get(x,-1) for x in y_pred_lbl])
+    mask = (ti>=0)&(pi>=0)
+    cm = sk_confusion_matrix(ti[mask], pi[mask], labels=[idx[c] for c in classes], normalize='true')
+    plot_confusion_matrix(cm, classes, "Global 4-casos (Pure/M1/M2/M3 por pigmento)", out_path)
 
-    yt_pig = pig_true.argmax(axis=1)
-    yp_pig = pig_pred.argmax(axis=1)
-    yt_mix = mix_true.argmax(axis=1)
-    yp_mix = mix_pred.argmax(axis=1)
+# === 2: Pure vs Mixture (global) ===
+def cm_mix_global2(y_true: np.ndarray, y_pred: np.ndarray, out_path: str):
+    n_p = int(variables["num_files"])
+    y_true_lbl = _decode_mix_group((y_true > 0.5).astype(int), n_p)
+    y_pred_lbl = _decode_mix_group(y_pred, n_p)
+    classes = ["Pure","Mixture"]; idx = {"Pure":0,"Mixture":1}
+    ti = np.array([idx[x] for x in y_true_lbl]); pi = np.array([idx[x] for x in y_pred_lbl])
+    cm = sk_confusion_matrix(ti, pi, labels=[0,1], normalize='true')
+    plot_confusion_matrix(cm, classes, "Mixture Only (Pure vs Mixture)", out_path)
 
-    # Global: Pure (idx 0) vs Mixture (idx 1/2/3)
-    yt_is_mix = (yt_mix != 0).astype(int)
-    yp_is_mix = (yp_mix != 0).astype(int)
-    yt_global = yt_pig * 2 + yt_is_mix
-    yp_global = yp_pig * 2 + yp_is_mix
 
-    # Ticks Pxx_pure / Pxx_mixture
-    class_names = []
-    for i in range(n_pig):
-        ptag = f"P{(i+1):02d}"
-        class_names.append(f"{ptag}_pure")
-        class_names.append(f"{ptag}_mixture")
+# ahora añado una funcion que me guarde las matrices de confusion en PNG:
+
+
+# --- MINI helper para la GLOBAL (Pigment + Mixture) → PNG, reusa tu plot_confusion_matrix
+def save_confusion_pngs(y_true, y_pred, pigment_names, out_dir, prefix="model", threshold=None):
+    # 1) Respeta el tipo de y_pred; si piden umbral, aplícalo
+    if threshold is not None and y_pred.dtype.kind in "fc":
+        y_pred_use = (y_pred >= threshold).astype(int)
+    else:
+        y_pred_use = y_pred.astype(int)
+
+    # 2) GLOBAL: etiquetas solo desde y_true (como tu función original)
+    true_labels = [convert_materials(v) for v in y_true.astype(int)]
+    pred_labels = [convert_materials(v) for v in y_pred_use.astype(int)]
+    labels_true = sorted(set(true_labels))  # = np.unique(test_labels)
+
+    lab2idx = {lab: i for i, lab in enumerate(labels_true)}
+    yt_idx = np.array([lab2idx[x] for x in true_labels])
+    # OJO: si hay una etiqueta predicha que no está en y_true, la descartamos para mantener la forma
+    yp_idx = np.array([lab2idx[x] for x in pred_labels if x in lab2idx])
+    # Alinea longitudes si hiciste filtrado (opcionalmente descarta esas muestras en yt_idx también)
+    mask = np.array([x in lab2idx for x in pred_labels])
+    yt_idx = yt_idx[mask]
 
     os.makedirs(out_dir, exist_ok=True)
-    _plot_confusion_matrix(
-        yt_global, yp_global, class_names=class_names,
-        title="Global (Pigment × {Pure/Mixture})",
-        out_path=os.path.join(out_dir, f"{prefix}_cm_global.png")
-    )
-
-    # Per Pigment
-    _plot_confusion_matrix(
-        yt_pig, yp_pig, class_names=[f"P{(i+1):02d}" for i in range(n_pig)],
-        title="Confusion matrix per Pigment",
-        out_path=os.path.join(out_dir, f"{prefix}_cm_pigment.png")
-    )
-
-    # Per Mixture
-    mix_names = _mixture_labels_from_config()  # ["Pure","Mixture1","Mixture2","Mixture3"]
-    _plot_confusion_matrix(
-        yt_mix, yp_mix, class_names=mix_names,
-        title="Confusion matrix per Mixture",
-        out_path=os.path.join(out_dir, f"{prefix}_cm_mixture.png")
+    plot_confusion_matrix(
+        yt_idx, yp_idx, labels=labels_true,  # <- display_labels
+        title="Global (Pigment + Mixture)",
+        out_path=os.path.join(out_dir, f"{prefix}_confusion_matrix_global.png")
     )
 
 
-def _global_indices(y_true, y_pred, n_pig):
-    """
-    Devuelve índices globales 0..(2*n_pig-1):
-    2*c + 0  -> pigmento c, PURE
-    2*c + 1  -> pigmento c, MIXTURE (cualquiera de {1,2,3})
-    """
-    yt_pig, yt_mix = _split_heads(y_true, n_pig)
-    yp_pig, yp_mix = _split_heads(y_pred, n_pig)
-
-    yt_pig_idx = yt_pig.argmax(axis=1)
-    yp_pig_idx = yp_pig.argmax(axis=1)
-
-    yt_is_mix = (yt_mix.argmax(axis=1) != 0).astype(int)   # 0=Pure, 1=Mixture{1,2,3}
-    yp_is_mix = (yp_mix.argmax(axis=1) != 0).astype(int)
-
-    yt_glob = yt_pig_idx * 2 + yt_is_mix
-    yp_glob = yp_pig_idx * 2 + yp_is_mix
-    return yt_glob, yp_glob
-
-def _px_labels(n_pig):
-    """['P01_pure','P01_mixture', 'P02_pure', ...]"""
-    labs = []
-    for i in range(n_pig):
-        labs.append(f"P{i+1:02d}_pure")
-        labs.append(f"P{i+1:02d}_mixture")
-    return labs
-
-# ---------- NUEVO: CSV amplio con TRUE vs PRED (pesos) para Pxx_pure / Pxx_mixture ----------
-def export_global_table(y_true, y_pred, pigment_names, out_csv):
-    """
-    Crea una tabla por muestra con:
-    - true_pig / pred_pig
-    - true_mix (Pure/Mix1/Mix2/Mix3) y flag true_is_mix / pred_is_mix
-    """
-    n_pig = int(variables["num_files"])
-    mix_names = _mixture_labels_from_config()
-
-    pig_t, mix_t = _split_heads(y_true, n_pig)
-    pig_p, mix_p = _split_heads(y_pred, n_pig)
-
-    tp = pig_t.argmax(axis=1)
-    pp = pig_p.argmax(axis=1)
-    tm = mix_t.argmax(axis=1)
-    pm = mix_p.argmax(axis=1)
-
-    true_is_mix = (tm != 0).astype(int)
-    pred_is_mix = (pm != 0).astype(int)
-
-    rows = []
-    for i in range(len(tp)):
-        rows.append({
-            "idx": i,
-            "true_pig_idx": int(tp[i]),
-            "pred_pig_idx": int(pp[i]),
-            "true_pig_name": pigment_names[int(tp[i])] if 0 <= tp[i] < len(pigment_names) else f"P{tp[i]}",
-            "pred_pig_name": pigment_names[int(pp[i])] if 0 <= pp[i] < len(pigment_names) else f"P{pp[i]}",
-            "true_mix_idx": int(tm[i]),
-            "pred_mix_idx": int(pm[i]),
-            "true_mix_name": mix_names[int(tm[i])],
-            "pred_mix_name": mix_names[int(pm[i])],
-            "true_is_mix": int(true_is_mix[i]),
-            "pred_is_mix": int(pred_is_mix[i]),
-        })
-    df = pd.DataFrame(rows)
-    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
-    df.to_csv(out_csv, index=False)
-    return df
-
-def evaluation_metrics(y_true, y_pred, pigment_names, threshold=0.5,
-                       save_table_path=None, print_report=False):
-    """
-    No imprime; devuelve dict con métricas globales y guarda (si se pide) tabla por muestra.
-    """
-    n_pig = int(variables["num_files"])
-    mix_names = _mixture_labels_from_config()
-
-    pig_t, mix_t = _split_heads(y_true, n_pig)
-    pig_p, mix_p = _split_heads(y_pred, n_pig)
-
-    tp = pig_t.argmax(axis=1)
-    pp = pig_p.argmax(axis=1)
-    tm = mix_t.argmax(axis=1)
-    pm = mix_p.argmax(axis=1)
-
-    true_is_mix = (tm != 0).astype(int)
-    pred_is_mix = (pm != 0).astype(int)
-
-    # One-hot “pred” duros para métricas multilabel (concat)
-    y_true_bin = np.concatenate([pig_t, mix_t], axis=1)
-    y_pred_bin = np.concatenate([
-        np.eye(n_pig)[pp],            # pigmento 1-de-N
-        np.eye(4)[pm]                 # mixture 1-de-4
-    ], axis=1)
-
-    # Probabilidades para AUC/AP
-    try:
-        roc_auc = roc_auc_score(y_true_bin, np.concatenate([pig_p, mix_p], axis=1), average='micro')
-    except ValueError:
-        roc_auc = float('nan')
-    try:
-        avg_precision = average_precision_score(y_true_bin, np.concatenate([pig_p, mix_p], axis=1), average='micro')
-    except ValueError:
-        avg_precision = float('nan')
-    try:
-        ll = log_loss(y_true_bin, np.concatenate([pig_p, mix_p], axis=1))
-    except ValueError:
-        ll = float('nan')
-
-    f1 = f1_score(y_true_bin, y_pred_bin, average='micro', zero_division=0)
-    prec = precision_score(y_true_bin, y_pred_bin, average='micro', zero_division=0)
-    rec = recall_score(y_true_bin, y_pred_bin, average='micro', zero_division=0)
-    ham_acc = 1 - hamming_loss(y_true_bin, y_pred_bin)
-    acc_exact = accuracy_score(y_true_bin, y_pred_bin)
-
-    # Tabla por muestra (si se pide)
-    if save_table_path:
-        rows = []
-        for i in range(len(tp)):
-            rows.append({
-                "idx": i,
-                "true_pig_idx": int(tp[i]),
-                "pred_pig_idx": int(pp[i]),
-                "true_pig_name": pigment_names[int(tp[i])] if 0 <= tp[i] < len(pigment_names) else f"P{tp[i]}",
-                "pred_pig_name": pigment_names[int(pp[i])] if 0 <= pp[i] < len(pigment_names) else f"P{pp[i]}",
-                "true_mix_idx": int(tm[i]),
-                "pred_mix_idx": int(pm[i]),
-                "true_mix_name": mix_names[int(tm[i])],
-                "pred_mix_name": mix_names[int(pm[i])],
-                "true_is_mix": int(true_is_mix[i]),
-                "pred_is_mix": int(pred_is_mix[i]),
-                "pig_correct": int(tp[i] == pp[i]),
-                "mix_correct": int(tm[i] == pm[i]),
-                "global_correct": int((tp[i] == pp[i]) and ((tm[i] == 0) == (pm[i] == 0))),
-            })
-        df = pd.DataFrame(rows)
-        os.makedirs(os.path.dirname(save_table_path), exist_ok=True)
-        df.to_csv(save_table_path, index=False)
-
-    return {
-        "f1_micro": float(f1),
-        "precision_micro": float(prec),
-        "recall_micro": float(rec),
-        "roc_auc_micro": float(roc_auc),
-        "avg_precision_micro": float(avg_precision),
-        "hamming_accuracy": float(ham_acc),
-        "exact_match_accuracy": float(acc_exact),
-        "num_samples": int(y_true.shape[0]),
-        "num_classes": int(y_true.shape[1]),
-    }
-
-def export_global_table(y_true, y_pred, pigment_names, out_csv, threshold=0.5):
-    """
-    Tabla por muestra con:
-      - true/pred pigment (idx y nombre)
-      - true/pred pure|mixture
-      - binarios concatenados (true/pred)
-      - confianzas y flags de acierto
-    Guarda CSV y devuelve el DataFrame.
-    """
-    n_pig = int(variables["num_files"])
-    yt_pig, yt_mix = _split_heads(y_true, n_pig)
-    yp_pig, yp_mix = _split_heads(y_pred, n_pig)
-
-    yt_pig_idx = yt_pig.argmax(axis=1)
-    yp_pig_idx = yp_pig.argmax(axis=1)
-    yt_mix_idx = yt_mix.argmax(axis=1)
-    yp_mix_idx = yp_mix.argmax(axis=1)
-
-    # confianzas argmax
-    pig_conf = yp_pig.max(axis=1)
-    mix_conf = yp_mix.max(axis=1)
-
-    def mix_name(idx):
-        return "pure" if idx == 0 else "mixture"
-
-    rows = []
-    for i in range(y_true.shape[0]):
-        t_p = int(yt_pig_idx[i]); p_p = int(yp_pig_idx[i])
-        t_m = int(yt_mix_idx[i]); p_m = int(yp_mix_idx[i])
-
-        row = {
-            "true_pig_idx": t_p,
-            "true_pig_name": pigment_names[t_p] if t_p < len(pigment_names) else f"Pigment {t_p+1}",
-            "true_mix_idx": t_m,
-            "true_mix_name": mix_name(t_m),
-
-            "pred_pig_idx": p_p,
-            "pred_pig_name": pigment_names[p_p] if p_p < len(pigment_names) else f"Pigment {p_p+1}",
-            "pred_mix_idx": p_m,
-            "pred_mix_name": mix_name(p_m),
-
-            "pred_pig_conf": float(pig_conf[i]),
-            "pred_mix_conf": float(mix_conf[i]),
-
-            "true_binary": ''.join(map(str, y_true[i].astype(int))),
-            "pred_binary": ''.join(map(str, (np.concatenate([ (yp_pig[i] >= threshold).astype(int),
-                                                              (yp_mix[i] >= threshold).astype(int) ]) )))
-        }
-        row["correct_pigment"] = int(row["true_pig_idx"] == row["pred_pig_idx"])
-        row["correct_is_mixture"] = int((row["true_mix_idx"] != 0) == (row["pred_mix_idx"] != 0))
-        row["correct_global"] = int(row["correct_pigment"] and row["correct_is_mixture"])
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
-    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
-    df.to_csv(out_csv, index=False)
-    return df
