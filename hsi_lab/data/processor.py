@@ -202,43 +202,55 @@ class HSIDataProcessor:
             print("No valid files loaded.")
         return self.all_data
 
+
     # =============================
     # DataFrame (1 fila por píxel)
     # =============================
-    def dataframe(self):
-        import numpy as np
-        import pandas as pd
+    def dataframe(self, mode: str = "filtered", debug_csv_dir: str | None = None):
+        """
+        mode:
+        - "raw": sin muestreo/filtros/cuotas/igualado.
+        - "filtered": comportamiento clásico.
+        Si 'debug_csv_dir' se pasa, guarda CSVs de diagnóstico por etapas.
+        """
+        import numpy as np, pandas as pd, os
 
+        RAW = (mode == "raw")
         multilabel_rows = []
+
+        # 🔎 debug: acumuladores por etapa
+        dbg_stage1_mask = []        # por File: pixels con mixture_map>0 (antes de muestrear)
+        dbg_stage2_after_sample = []# por File: nº de coords tras sample_every
+        dbg_stage3_after_filters = [] # por File: nº filas que pasarían filtros region/subregion
+        dbg_files_seen = set()
 
         NUM_PIGMENTS = int(getattr(self, "num_pigments", self.num_files))
         if not getattr(self, "mixture_mapping", None):
             raise ValueError("self.mixture_mapping vacío o no definido")
 
-        # Mapeo de mixtures
-        mixture_bits = list(self.mixture_mapping.keys())             # ['1000','0100','0010','0001']
+        # --- Mapeo mixtures como antes ---
+        mixture_bits = list(self.mixture_mapping.keys())
         mixture_len = len(mixture_bits[0])
         if not all(len(b) == mixture_len for b in mixture_bits):
             raise ValueError("Todos los bitstrings de mixture deben tener la misma longitud")
-
         mixture_bits_ordered   = sorted(mixture_bits, key=self._first_one_idx)
-        mixture_names_ordered  = [self.mixture_mapping[b] for b in mixture_bits_ordered]  # nombres en ese orden
+        mixture_names_ordered  = [self.mixture_mapping[b] for b in mixture_bits_ordered]
         mixture_pos_by_name    = { self.mixture_mapping[b]: self._first_one_idx(b) for b in mixture_bits }
 
-        # Bloques (sin binder)
         MIX_BASE  = NUM_PIGMENTS
         TOTAL_LEN = NUM_PIGMENTS + mixture_len
-
         num_mixture = getattr(self, "num_mixture", {})
 
-        # Filtros opcionales desde config
-        sel_regions = set(getattr(self, "selected_regions", []) or [])
-        sel_subregs = set(getattr(self, "selected_subregions", []) or [])
+        # Filtros opcionales desde config (se desactivan en modo RAW)
+        sel_regions = set([] if RAW else (getattr(self, "selected_regions", []) or []))
+        sel_subregs = set([] if RAW else (getattr(self, "selected_subregions", []) or []))
 
         # -----------------------
         # Recorrer ficheros H5
         # -----------------------
         for file_name, h5_file in self.all_data.items():
+            dbg_files_seen.add(str(file_name).strip())
+
             data = h5_file.filtered_labels["labels/vector_multilabel"]  # (H, W, D_in)
             H, W, D_in = data.shape
 
@@ -246,52 +258,63 @@ class HSIDataProcessor:
                 mixture_map = h5_file.filtered_labels["labels/labels_mixture"]
                 assert mixture_map.shape == (H, W)
             except Exception:
-                continue  # sin mixture_map no podemos etiquetar mezcla real
+                continue
 
-            # Rango vertical de cada mezcla (subregión)
+            # === MASK de píxeles válidos: solo >0 ===
+            mask = (mixture_map > 0)
+            ys_idx_all, xs_idx_all = np.nonzero(mask)
+
+            # 🔎 debug stage1: tamaño del mask
+            dbg_stage1_mask.append({"File": str(file_name).strip(), "mask_pixels_gt0": int(mask.sum())})
+
+            if len(ys_idx_all) == 0:
+                continue
+
+            # === Muestreo ambiental ===
+            sample_every = 0 if RAW else int(os.getenv("HSI_SAMPLE_EVERY", "0"))
+            if sample_every > 1:
+                ys_idx = ys_idx_all[::sample_every]
+                xs_idx = xs_idx_all[::sample_every]
+            else:
+                ys_idx, xs_idx = ys_idx_all, xs_idx_all
+
+            # 🔎 debug stage2: coords tras muestreo (potencial recorte global)
+            dbg_stage2_after_sample.append({"File": str(file_name).strip(), "coords_after_sampling": int(len(ys_idx))})
+
+            # === Subregiones (como ya tienes) ===
             mixture_ranges = {}
             for mnum in np.unique(mixture_map):
-                if mnum == 0:
-                    continue
+                if mnum == 0: continue
                 rows = np.any(mixture_map == mnum, axis=1)
                 ys = np.where(rows)[0]
                 if ys.size:
                     mixture_ranges[int(mnum)] = (int(ys[0]), int(ys[-1]) + 1)
 
-            mask = (mixture_map > 0)
-            ys_idx, xs_idx = np.nonzero(mask)
-            if len(ys_idx) == 0:
-                continue
-
-            # MUESTREO opcional para acelerar (cada k píxeles)
-            sample_every = int(os.getenv("HSI_SAMPLE_EVERY", "0"))  # 0 = sin muestreo
-            if sample_every > 1:
-                ys_idx = ys_idx[::sample_every]
-                xs_idx = xs_idx[::sample_every]
-
             xmid, ymid_default = W / 2.0, H / 2.0
 
+            # 🔎 debug: contador provisional antes de filtros región/subregión
+            prefilter_count = 0
+            postfilter_count = 0
+
+            # --- loop de píxeles válidos ---
             for y, x in zip(ys_idx, xs_idx):
                 v = data[y, x, :]
 
-                # Pigmento (one-hot)
                 pigment_idx = int(np.argmax(v[:NUM_PIGMENTS]))
 
-                # Mezcla real del píxel (1..4)
                 mnum_px = int(mixture_map[y, x])
-                if mnum_px <= 0 or mnum_px > 4:
+                if mnum_px <= 0 or mnum_px > mixture_len:
                     continue
+
+                prefilter_count += 1
 
                 m_name = mixture_names_ordered[mnum_px - 1]
                 m_off  = mixture_pos_by_name[m_name]
-
-                # Región = mezcla 1..4
                 region = mnum_px
 
-                # Subregión por cuadrantes relativos al rango de su mezcla
+                # Subregión por cuadrantes relativos a su mezcla
                 if mnum_px in mixture_ranges:
-                    y0, y1 = mixture_ranges[mnum_px]
-                    ymid = (y0 + y1) / 2.0
+                    y0, y1 = mixture_ranges[mnum_px]; ymid = (y0 + y1) / 2.0
                 else:
                     ymid = ymid_default
                 if x < xmid and y >= ymid:   subregion = 1
@@ -299,30 +322,47 @@ class HSIDataProcessor:
                 elif x < xmid and y < ymid:   subregion = 3
                 else:                          subregion = 4
 
-                # Filtros opcionales
+                # === Filtros de región/subregión (se omiten en RAW) ===
                 if sel_regions and region not in sel_regions:
                     continue
                 if sel_subregs and subregion not in sel_subregs:
                     continue
 
-                # Vector Multi (pigmento + 4 mixture)
+                postfilter_count += 1
+
                 full_vector = [0] * TOTAL_LEN
                 full_vector[pigment_idx] = 1
                 full_vector[MIX_BASE + m_off] = 1
 
                 multilabel_rows.append({
                     "File": str(file_name).strip(),
-                    "X": int(x),
-                    "Y": int(y),
+                    "X": int(x), "Y": int(y),
                     "Pigment Index": int(pigment_idx),
                     "Mixture": m_name,
                     "Num. Mixture": int(num_mixture.get(m_name, 0)),
-                    "Region": int(region),        # 1..4
-                    "Subregion": int(subregion),  # 1..4
+                    "Region": int(region), "Subregion": int(subregion),
                     "Multi": full_vector,
                 })
 
+            # 🔎 debug stage3: tras filtros (solo aplica si no RAW)
+            dbg_stage3_after_filters.append({
+                "File": str(file_name).strip(),
+                "prefilter_candidates": int(prefilter_count),
+                "after_region_filters": int(postfilter_count)
+            })
+
         df_multilabel = pd.DataFrame(multilabel_rows)
+
+        # 🔎 debug: volcados intermedios si se pide
+        if debug_csv_dir:
+            os.makedirs(debug_csv_dir, exist_ok=True)
+            pd.DataFrame(dbg_stage1_mask).sort_values("File").to_csv(
+                os.path.join(debug_csv_dir, "stage1_mask_pixels_gt0.csv"), index=False)
+            pd.DataFrame(dbg_stage2_after_sample).sort_values("File").to_csv(
+                os.path.join(debug_csv_dir, "stage2_coords_after_sampling.csv"), index=False)
+            pd.DataFrame(dbg_stage3_after_filters).sort_values("File").to_csv(
+                os.path.join(debug_csv_dir, "stage3_after_region_filters.csv"), index=False)
+
 
         # ====== cubos espectrales ======
         def build_cube_df(cube_type):
@@ -355,30 +395,40 @@ class HSIDataProcessor:
             df_t = df_t[cols]
             df_cubes = df_t if df_cubes is None else df_cubes.merge(df_t, on=["File", "X", "Y"], how="inner")
 
-        # Merge multilabel + cubos
+        # Merge multilabel + cubos (LEFT para no perder filas etiquetadas)
         if not df_multilabel.empty and df_cubes is not None and not df_cubes.empty:
             df_merged = df_multilabel.merge(df_cubes, on=["File", "X", "Y"], how="left")
         else:
             df_merged = df_cubes if (df_cubes is not None and not df_cubes.empty) else df_multilabel
 
-        # Etiquetas y orden inicial
-        if not df_multilabel.empty:
-            df_multilabel = df_multilabel.sort_values(
-                ["File", "Region", "Mixture", "Y", "X"], kind="mergesort"
-            ).reset_index(drop=True)
-            df_multilabel["Spectrum"] = (df_multilabel.groupby("File").cumcount() + 1)\
-                .astype(str).radd("Spectrum_")
+        # 🔎 debug: resúmenes por File/Region/Subregion/Mixture del multilabel y del final
+        if debug_csv_dir:
+            # por File (multilabel puro)
+            (df_multilabel.groupby("File").size()
+                .rename("rows").reset_index()
+                .to_csv(os.path.join(debug_csv_dir, "stage4_multilabel_rows_by_file.csv"), index=False))
+            # por File/Region/Mixture/Subregion
+            for cols, name in [
+                (["File","Region"], "by_File_Region"),
+                (["File","Subregion"], "by_File_Subregion"),
+                (["File","Mixture"], "by_File_Mixture"),
+                (["File","Pigment Index","Mixture"], "by_File_Pigment_Mixture"),
+            ]:
+                (df_multilabel.groupby(cols).size()
+                    .rename("rows").reset_index()
+                    .to_csv(os.path.join(debug_csv_dir, f"stage4_multilabel_{name}.csv"), index=False))
+            # final tras merge
+            if df_merged is not None and not df_merged.empty:
+                (df_merged.groupby("File").size()
+                    .rename("rows").reset_index()
+                    .to_csv(os.path.join(debug_csv_dir, "stage5_final_df_merged_by_file.csv"), index=False))
 
-        # === Orden por nº de File y luego por campos relevantes ===
-        if df_merged is not None and not df_merged.empty:
-            df_merged = df_merged.assign(
-                _FileNum = df_merged["File"].map(self._extract_first_int)
-            ).sort_values(
-                ["_FileNum", "Region", "Subregion", "Mixture", "Y", "X"],
-                kind="mergesort"
-            ).drop(columns=["_FileNum"]).reset_index(drop=True)
 
-        # === Aplicar CUOTAS balanceadas (Subregión tiene prioridad) ===
+        # === EN RAW NO aplicamos cuotas ni igualación ===
+        if RAW:
+            return df_merged
+
+        # === (modo 'filtered') Cuotas ===
         df_out = df_merged
         if self.subregion_row_quota:
             parts = []
@@ -397,7 +447,7 @@ class HSIDataProcessor:
         if df_out is not None and not df_out.empty:
             df_out = self._equalize_r234_to_r1_by_pigment(df_out)
 
-        # Orden final de presentación
+        # Orden final
         if df_out is not None and not df_out.empty:
             df_out = df_out.assign(
                 _FileNum = df_out["File"].map(self._extract_first_int)
@@ -407,6 +457,8 @@ class HSIDataProcessor:
             ).drop(columns=["_FileNum"]).reset_index(drop=True)
 
         return df_out
+
+
 
     def save_rows_for_file(self, target_file: str, out_csv_path: str):
         df = self.dataframe()
@@ -420,27 +472,9 @@ class HSIDataProcessor:
         print(f"[OK] Guardado {len(df_t)} filas en: {out_csv_path}")
         return out_csv_path
 
-TARGET_FILE = "18_Egyptian_blue_GA_10060.h5"
-OUT_CSV = "/home/pgimenez/projects/HSI/hsi_lab/data/18_Egyptian_blue_GA_10060_rows.csv"
 
-proc = HSIDataProcessor(variables)
-proc.load_h5_files()
-proc.save_rows_for_file(TARGET_FILE, OUT_CSV)
 
-print("data_type =", variables.get("data_type"))
 
-proc = HSIDataProcessor(variables)
-proc.load_h5_files()
-h5 = proc.all_data.get("18_Egyptian_blue_GA_10060.h5")
-print("H5 keys:", list(h5.keys()))
 
-for t in ["vis","swir"]:
-    if t in h5:
-        print(t, "-> datasets:", list(h5[t].keys()))
-    else:
-        print(t, "NO existe como grupo en el H5")
 
-df = proc.dataframe()
-print("Cols espectrales ejemplo:",
-      [c for c in df.columns if c.startswith("vis_") or c.startswith("swir_")][:10])
-print("Filas de ese File:", (df["File"]=="18_Egyptian_blue_GA_10060.h5").sum())
+

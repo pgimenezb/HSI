@@ -78,17 +78,6 @@ cd /home/pgimenez/projects/HSI
 python -m train.py --models cnn_baseline
 # if more than one:
 python -m train.py --models cnn_baseline,dnn_wide --reports
-# or:
-python train.py --models cnn_baseline --reports --limit-rows 0
-# also limiting rows per subregion:
-python train.py --models cnn_baseline --group-by Subregion --per-group-limit-map "1=300,2=100,3=100,4=100"
-#or:
-python train.py --models cnn_baseline --group-by Subregion --per-group-limit-map "1=300,2=100" 
-#  limiting rows per region:
-python train.py --models cnn_baseline --group-by Region --per-group-limit-map "1=300,2=100,3=100,4=100"
-# or per subregion and pigment (combination of columns):
-python train.py --models cnn_baseline --group-by Subregion,Pigment 
-python train.py --models cnn_baseline,dnn_wide --reports --group-by Subregion,Pigment --per-group-limit 200
 # detach: Ctrl+A then D
 # reattach: screen -r hsi
 ```
@@ -123,8 +112,6 @@ cd ~/projects/HSI
 git remote -v 
 # if NO origin, add (SSH):
 git remote add origin git@github.com:pgimenez/HSI.git
-git add -A
-git init
 git add -A
 git commit -m "Initial commit 1"
 git branch -M main

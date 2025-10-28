@@ -1,163 +1,163 @@
-import re
-import os
-import sys
-import importlib
-import subprocess
-import inspect
-import glob
-from copy import deepcopy
-import json
-import h5py
-import numpy as np
-import pandas as pd
-import time
-import matplotlib.pyplot as plt
-from ipywidgets import interact, Dropdown, IntSlider
-from sklearn.metrics import (
-    mean_squared_error,
-    mean_absolute_error,
-    classification_report,
-    confusion_matrix,
-    ConfusionMatrixDisplay,
-    accuracy_score,
-    roc_auc_score,
-    average_precision_score,
-    log_loss,
-    make_scorer,
-    precision_score,
-    recall_score,
-    f1_score,
-    hamming_loss,
-)
-from sklearn.decomposition import PCA
-import random
-from collections import defaultdict
-import tensorflow as tf
-import optuna
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import (
-    Conv1D,
-    MaxPooling1D,
-    Dense,
-    Dropout,
-    Flatten,
-    GlobalAveragePooling1D,
-    BatchNormalization,
-)
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.callbacks import EarlyStopping
-from sklearn.model_selection import train_test_split, KFold, StratifiedShuffleSplit, cross_val_score
-from tensorflow.keras.optimizers import Adam, SGD
-import tensorflow.keras.backend as K
-from tensorflow.keras.regularizers import l2
-import lightgbm as lgb
-from sklearn.multioutput import MultiOutputClassifier
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.ensemble import RandomForestClassifier
-from skmultilearn.model_selection import iterative_train_test_split
-from scipy.signal import savgol_filter
-import matplotlib.patches as patches
-from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
-from numpy.random import default_rng
-from IPython import get_ipython
-from pathlib import Path
-import pickle
-import hashlib
-
-
-def _to_jsonable(obj):
-    if isinstance(obj, dict):
-        return {str(k): _to_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_to_jsonable(x) for x in obj]
-    if isinstance(obj, (set, frozenset)):
-        return sorted(_to_jsonable(list(obj)))
-    if isinstance(obj, Path):
-        return str(obj)
-    # numpy -> python
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
-    return obj
-
-
-def _stable_hash(payload) -> str:
-    data = _to_jsonable(payload)
-    raw = json.dumps(
-        data,
-        sort_keys=True,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha1(raw).hexdigest()  # clave corta y estable para caché
-
+from hsi_lab.data.config import variables
+import os, random, re, numpy as np, pandas as pd, h5py, tensorflow as tf
 
 class HSIDataProcessor:
+
     SEED = 42
 
     def __init__(self, variables):
         self.set_global_seed()
-
         self.data_folder = variables['data_folder']
-        self.excel_file = variables['excel_file']
+        self.excel_file  = variables['excel_file']
         self.file_names = pd.read_csv(self.excel_file) if self.excel_file else None
         print(f"active data_folder: {self.data_folder}")
         print(f"active excel_file: {self.excel_file}")
 
         self.all_data = {}
         self.loaded_files_range = (0, 0)
-        self.binary_representations = {}
-        self.Pigment_nom = None
 
+        # Config y metadatos
         self.start_index = variables['start_index']
-        self.num_files = variables['num_files']
-
+        self.num_files = variables['num_files']                  # = nº de pigmentos activos
         self.selected_regions = variables['selected_regions']
         self.selected_subregions = variables['selected_subregions']
-        self.region_conditions = {
-            1: lambda v: v[-7] == 1 and v[-4] == 1,
-            2: lambda v: v[-6] == 1 and v[-4] == 1,
-            3: lambda v: v[-7] == 1 and v[-3] == 1,
-            4: lambda v: v[-6] == 1 and v[-3] == 1,
-            5: lambda v: v[-7] == 1 and v[-2] == 1,
-            6: lambda v: v[-6] == 1 and v[-2] == 1,
-            7: lambda v: v[-7] == 1 and v[-1] == 1,
-            8: lambda v: v[-6] == 1 and v[-1] == 1,
-        }
-        self.selected_binders = variables['selected_binders']
         self.data_type = variables['data_type']
-        self.points = [
-            (21, 9), (81, 9), (81, 32), (47, 47), (20, 60),
-            (60, 68), (85, 75), (20, 90), (90, 93),
-        ]
         self.savgol_window = variables['savgol_window']
         self.savgol_polyorder = variables['savgol_polyorder']
-        self.num_binder = variables['num_binder']
         self.num_mixture = variables['num_mixture']
-        self.binder_columns = variables['binder_columns']
         self.mixture_columns = variables['mixture_columns']
-        self.all_pigment_columns = pd.read_csv(self.excel_file)['Title'].tolist() if self.excel_file else []
         self.meta_label_map = variables['meta_label_map']
-        self.binder_mapping = variables['binder_mapping']
         self.mixture_mapping = variables['mixture_mapping']
-        self.pigments_mapping = {}
-        self._multi_to_label = None
-
-        # copia jsonable de variables para hashing estable
         self.variables = variables.copy()
-        self.variables["binder_columns"] = {
-            int(k): v for k, v in self.variables.get("binder_columns", {}).items()
-        }
+
+        # Normaliza llaves a int para mixture_columns
         self.variables["mixture_columns"] = {
             int(k): v for k, v in self.variables.get("mixture_columns", {}).items()
         }
-        self.binder_columns = self.variables["binder_columns"]
         self.mixture_columns = self.variables["mixture_columns"]
 
-        self._df_cache = None
+        # Control de cuotas/balanceo
+        self.region_row_quota    = self.variables.get("region_row_quota", {}) or {}
+        self.subregion_row_quota = self.variables.get("subregion_row_quota", {}) or {}
+        self.balance_seed        = int(self.variables.get("balance_seed", 42))
+
+    # =============================
+    # Utilidades internas
+    # =============================
+    @staticmethod
+    def _first_one_idx(bitstr: str) -> int:
+        idxs = [i for i, c in enumerate(bitstr) if c == '1']
+        if len(idxs) != 1:
+            raise ValueError(f"Bitstring inválido (un solo '1'): {bitstr}")
+        return idxs[0]
+
+    @staticmethod
+    def _extract_first_int(s: str) -> int:
+        """Extrae el primer número entero que aparezca en s (o -1 si no hay)."""
+        m = re.search(r"\d+", str(s))
+        return int(m.group(0)) if m else -1
+
+    def _balanced_quota_sample(self, df_grp: pd.DataFrame, total: int) -> pd.DataFrame:
+        """
+        Devuelve 'total' filas de df_grp (grupo por Región o Subregión),
+        balanceando por (Pigment Index × Mixture). Determinista con balance_seed.
+        Si total <= 0 o el grupo es más pequeño, devuelve el grupo sin tocar.
+        """
+        if total <= 0 or len(df_grp) <= total:
+            return df_grp
+
+        rng = np.random.default_rng(self.balance_seed)
+        strata = df_grp.groupby(["Pigment Index", "Mixture"], sort=False)
+        groups = [(k, g.index.to_numpy()) for k, g in strata]
+        S = len(groups)
+        if S == 0:
+            return df_grp.iloc[0:0]
+
+        base = total // S
+        rem  = total % S
+        order = np.arange(S); rng.shuffle(order)
+        take = np.full(S, base, dtype=int); take[order[:rem]] += 1
+
+        chosen = []
+        for (_, idxs), k_take in zip(groups, take):
+            if k_take <= 0:
+                continue
+            if len(idxs) <= k_take:
+                chosen.append(idxs)
+            else:
+                chosen.append(rng.choice(idxs, size=k_take, replace=False))
+
+        if not chosen:
+            return df_grp.iloc[0:0]
+        sel = np.concatenate(chosen); rng.shuffle(sel)
+        return df_grp.loc[sel]
+
+    def _balanced_quota_sample_by(self, df_grp: pd.DataFrame, total: int, by_cols) -> pd.DataFrame:
+        """
+        Versión general: balancea por columnas dadas (p.ej., ['Mixture'] o ['Mixture','Region']).
+        """
+        if total <= 0 or len(df_grp) <= total:
+            return df_grp
+
+        rng = np.random.default_rng(self.balance_seed)
+        strata = df_grp.groupby(by_cols, sort=False)
+        groups = [(k, g.index.to_numpy()) for k, g in strata]
+        S = len(groups)
+        if S == 0:
+            return df_grp.iloc[0:0]
+
+        base = total // S
+        rem  = total % S
+        order = np.arange(S); rng.shuffle(order)
+        take = np.full(S, base, dtype=int); take[order[:rem]] += 1
+
+        chosen = []
+        for (_, idxs), k_take in zip(groups, take):
+            if k_take <= 0:
+                continue
+            if len(idxs) <= k_take:
+                chosen.append(idxs)
+            else:
+                chosen.append(rng.choice(idxs, size=k_take, replace=False))
+
+        if not chosen:
+            return df_grp.iloc[0:0]
+        sel = np.concatenate(chosen); rng.shuffle(sel)
+        return df_grp.loc[sel]
+
+    def _equalize_r234_to_r1_by_pigment(self, df_in: pd.DataFrame) -> pd.DataFrame:
+        """
+        Para cada pigmento p, fuerza que (# filas en Regiones 2+3+4) == (# filas en Región 1).
+        Se hace por *downsampling* balanceado:
+          - Reg1: muestreo simple (solo hay una mezcla real en Reg1).
+          - Reg(2,3,4): balanceando por ['Mixture','Region'].
+        """
+        if df_in.empty:
+            return df_in
+
+        out_parts = []
+        for p in sorted(df_in["Pigment Index"].unique()):
+            dfp = df_in[df_in["Pigment Index"] == p]
+            r1   = dfp[dfp["Region"] == 1]
+            r234 = dfp[dfp["Region"].isin([2, 3, 4])]
+
+            n1, n234 = len(r1), len(r234)
+            if n1 == n234:
+                out_parts.append(dfp)
+                continue
+
+            target = min(n1, n234)
+
+            # Downsample ambos lados al mismo objetivo
+            r1_sel   = self._balanced_quota_sample_by(r1,   target, by_cols=["Mixture"])           if n1   > target else r1
+            r234_sel = self._balanced_quota_sample_by(r234, target, by_cols=["Mixture","Region"])  if n234 > target else r234
+
+            # Si hay filas en otras regiones (no 1-4), las conservamos tal cual
+            others = dfp[~dfp["Region"].isin([1, 2, 3, 4])]
+            out_parts.append(pd.concat([r1_sel, r234_sel, others], ignore_index=True))
+
+        out = pd.concat(out_parts, ignore_index=True)
+        return out
 
     def set_global_seed(self):
         seed = self.SEED
@@ -166,7 +166,9 @@ class HSIDataProcessor:
         np.random.seed(seed)
         tf.random.set_seed(seed)
 
-    # LOADING .H5 FILES AND FILTERING DATA BASED ON SELECTED PIGMENTS
+    # =============================
+    # Carga .h5  (binder se ignora)
+    # =============================
     def load_h5_files(self):
         self.loaded_files_range = (self.start_index, self.start_index + self.num_files)
         self.all_data = {}
@@ -176,224 +178,154 @@ class HSIDataProcessor:
             try:
                 h5_file = h5py.File(file_path, 'r')
 
-                # Load original arrays (without filters)
-                binder = h5_file['labels/labels_binder'][()]
-                mixture = h5_file['labels/labels_mixture'][()]
+                # Cargamos arrays originales
+                binder     = h5_file['labels/labels_binder'][()]          # no usado
+                mixture    = h5_file['labels/labels_mixture'][()]
                 multilabel = h5_file['labels/vector_multilabel'][()]
 
-                # Save directly into filtered_labels
-                h5_filtered = {
-                    'labels/labels_binder': binder,
+                h5_file.filtered_labels = {
+                    'labels/labels_binder': binder,       # compat
                     'labels/labels_mixture': mixture,
-                    'labels/vector_multilabel': multilabel,
+                    'labels/vector_multilabel': multilabel
                 }
-
-                h5_file.filtered_labels = h5_filtered
                 self.all_data[fichier] = h5_file
 
             except Exception as e:
                 print(f"Error loading {fichier}: {e}")
 
-        # Keep in file_names only those we actually loaded
         self.file_names = self.file_names[self.file_names['Title'].isin(self.all_data.keys())]
 
         print(f"{len(self.all_data)} loaded files.")
         if self.all_data:
-            last_key = list(self.all_data.keys())[-1]
-            print(f"Last file loaded: {last_key}")
+            print(f"Last file loaded: {list(self.all_data.keys())[-1]}")
         else:
             print("No valid files loaded.")
-
         return self.all_data
 
+
+    # =============================
+    # DataFrame (1 fila por píxel)
+    # =============================
     def dataframe(self):
         import numpy as np
         import pandas as pd
 
-        # =======================
-        #   Helpers / Layout
-        # =======================
-        def _first_one_idx(bitstr: str) -> int:
-            idxs = [i for i, c in enumerate(bitstr) if c == '1']
-            if len(idxs) != 1:
-                raise ValueError(f"Bitstring inválido (un solo '1'): {bitstr}")
-            return idxs[0]
-
         multilabel_rows = []
 
-        # --- 20 pigmentos fijos delante (usa num_files de config por defecto) ---
-        NUM_PIGMENTS = int(getattr(self, "num_files", 20))
-
-        # --- Mappings ---
-        if not getattr(self, "binder_mapping", None):
-            raise ValueError("self.binder_mapping vacío o no definido")
+        NUM_PIGMENTS = int(getattr(self, "num_pigments", self.num_files))
         if not getattr(self, "mixture_mapping", None):
             raise ValueError("self.mixture_mapping vacío o no definido")
 
-        binder_bits = list(self.binder_mapping.keys())
-        binder_len = len(binder_bits[0])
-        if not all(len(b) == binder_len for b in binder_bits):
-            raise ValueError("Todos los bitstrings de binder deben tener la misma longitud")
-
-        mixture_bits = list(self.mixture_mapping.keys())
+        # Mapeo de mixtures
+        mixture_bits = list(self.mixture_mapping.keys())             # ['1000','0100','0010','0001']
         mixture_len = len(mixture_bits[0])
         if not all(len(b) == mixture_len for b in mixture_bits):
             raise ValueError("Todos los bitstrings de mixture deben tener la misma longitud")
 
-        # Bloques
-        BINDER_BASE = NUM_PIGMENTS
-        MIX_BASE = NUM_PIGMENTS + binder_len
-        TOTAL_LEN = NUM_PIGMENTS + binder_len + mixture_len
+        mixture_bits_ordered   = sorted(mixture_bits, key=self._first_one_idx)
+        mixture_names_ordered  = [self.mixture_mapping[b] for b in mixture_bits_ordered]  # nombres en ese orden
+        mixture_pos_by_name    = { self.mixture_mapping[b]: self._first_one_idx(b) for b in mixture_bits }
 
-        # nombre -> offset dentro de su bloque (0-based), derivado del bit '1'
-        binder_pos_by_name = {name: _first_one_idx(bits) for bits, name in self.binder_mapping.items()}
-        mixture_pos_by_name = {name: _first_one_idx(bits) for bits, name in self.mixture_mapping.items()}
+        # Bloques (sin binder)
+        MIX_BASE  = NUM_PIGMENTS
+        TOTAL_LEN = NUM_PIGMENTS + mixture_len
 
-        # Orden de mixtures por posición del '1'
-        mixture_names_ordered = [
-            self.mixture_mapping[bits]
-            for bits in sorted(self.mixture_mapping.keys(), key=_first_one_idx)
-        ]
-
-        # Para traducir número->nombre (viene del binder_map)
-        num_binder = getattr(self, "num_binder", {})
-        inv_num_binder = {v: k for k, v in num_binder.items()}
         num_mixture = getattr(self, "num_mixture", {})
 
-        # Filtros opcionales
+        # Filtros opcionales desde config
         sel_regions = set(getattr(self, "selected_regions", []) or [])
         sel_subregs = set(getattr(self, "selected_subregions", []) or [])
 
-        # =======================
-        #      Recorrido H5
-        # =======================
+        # -----------------------
+        # Recorrer ficheros H5
+        # -----------------------
         for file_name, h5_file in self.all_data.items():
             data = h5_file.filtered_labels["labels/vector_multilabel"]  # (H, W, D_in)
             H, W, D_in = data.shape
 
-            # binder/mixture maps
             try:
-                binder_map = h5_file.filtered_labels["labels/labels_binder"]
                 mixture_map = h5_file.filtered_labels["labels/labels_mixture"]
-                assert binder_map.shape == (H, W) and mixture_map.shape == (H, W)
+                assert mixture_map.shape == (H, W)
             except Exception:
-                binder_map, mixture_map = None, None
+                continue  # sin mixture_map no podemos etiquetar mezcla real
 
-            binder_all_ones = False
-            if binder_map is not None:
-                u = np.unique(binder_map)
-                binder_all_ones = (u.size == 1 and u[0] == 1)
+            # Rango vertical de cada mezcla (subregión)
+            mixture_ranges = {}
+            for mnum in np.unique(mixture_map):
+                if mnum == 0:
+                    continue
+                rows = np.any(mixture_map == mnum, axis=1)
+                ys = np.where(rows)[0]
+                if ys.size:
+                    mixture_ranges[int(mnum)] = (int(ys[0]), int(ys[-1]) + 1)
 
-            # Rangos para region/subregion (solo metadatos)
-            binder_ranges, mixture_ranges = {}, {}
-            if binder_map is not None:
-                for bnum in np.unique(binder_map):
-                    if bnum == 0:
-                        continue
-                    cols = np.any(binder_map == bnum, axis=0)
-                    xs = np.where(cols)[0]
-                    if xs.size:
-                        binder_ranges[int(bnum)] = (int(xs[0]), int(xs[-1]) + 1)
-            if mixture_map is not None:
-                for mnum in np.unique(mixture_map):
-                    if mnum == 0:
-                        continue
-                    rows = np.any(mixture_map == mnum, axis=1)
-                    ys = np.where(rows)[0]
-                    if ys.size:
-                        mixture_ranges[int(mnum)] = (int(ys[0]), int(ys[-1]) + 1)
-            n_binders = len(binder_ranges) if binder_ranges else 0
-
-            # píxeles con alguna etiqueta activa
-            mask = data.any(axis=2)
-            ys, xs = np.nonzero(mask)
-            if len(ys) == 0:
+            mask = (mixture_map > 0)
+            ys_idx, xs_idx = np.nonzero(mask)
+            if len(ys_idx) == 0:
                 continue
 
-            for y, x in zip(ys, xs):
+            # MUESTREO opcional para acelerar (cada k píxeles)
+            sample_every = int(os.getenv("HSI_SAMPLE_EVERY", "0"))  # 0 = sin muestreo
+            if sample_every > 1:
+                ys_idx = ys_idx[::sample_every]
+                xs_idx = xs_idx[::sample_every]
+
+            xmid, ymid_default = W / 2.0, H / 2.0
+
+            for y, x in zip(ys_idx, xs_idx):
                 v = data[y, x, :]
 
-                # 1) Pigmento
-                if not np.any(v[:NUM_PIGMENTS]):
-                    continue
+                # Pigmento (one-hot)
                 pigment_idx = int(np.argmax(v[:NUM_PIGMENTS]))
 
-                # 2) Binder forzado
-                if binder_all_ones:
-                    forced_binder_name = "Arabic Gum"
-                    bnum_px = num_binder.get("Arabic Gum", 1)
+                # Mezcla real del píxel (1..4)
+                mnum_px = int(mixture_map[y, x])
+                if mnum_px <= 0 or mnum_px > 4:
+                    continue
+
+                m_name = mixture_names_ordered[mnum_px - 1]
+                m_off  = mixture_pos_by_name[m_name]
+
+                # Región = mezcla 1..4
+                region = mnum_px
+
+                # Subregión por cuadrantes relativos al rango de su mezcla
+                if mnum_px in mixture_ranges:
+                    y0, y1 = mixture_ranges[mnum_px]
+                    ymid = (y0 + y1) / 2.0
                 else:
-                    forced_binder_name = None
-                    bnum_px = 0
-                    if binder_map is not None:
-                        bnum_px = int(binder_map[y, x])
-                        if bnum_px > 0:
-                            forced_binder_name = inv_num_binder.get(bnum_px, None)
-                    if not forced_binder_name:
-                        forced_binder_name = "Arabic Gum" if "Arabic Gum" in binder_pos_by_name else next(iter(binder_pos_by_name.keys()))
-                        bnum_px = num_binder.get(forced_binder_name, 0)
+                    ymid = ymid_default
+                if x < xmid and y >= ymid:   subregion = 1
+                elif x >= xmid and y >= ymid: subregion = 2
+                elif x < xmid and y < ymid:   subregion = 3
+                else:                          subregion = 4
 
-                # 3) Región/Subregión (metadatos)
-                region = 0
-                subregion = 0
-                if binder_map is not None and mixture_map is not None:
-                    mnum_px = int(mixture_map[y, x])
-                    if bnum_px > 0 and mnum_px > 0 and n_binders > 0:
-                        region = (mnum_px - 1) * n_binders + bnum_px
-                        if (bnum_px in binder_ranges) and (mnum_px in mixture_ranges):
-                            x0, x1 = binder_ranges[bnum_px]
-                            y0, y1 = mixture_ranges[mnum_px]
-                            xmid = (x0 + x1) / 2.0
-                            ymid = (y0 + y1) / 2.0
-                            if x < xmid and y >= ymid:
-                                subregion = 1
-                            elif x >= xmid and y >= ymid:
-                                subregion = 2
-                            elif x < xmid and y < ymid:
-                                subregion = 3
-                            else:
-                                subregion = 4
-
+                # Filtros opcionales
                 if sel_regions and region not in sel_regions:
                     continue
                 if sel_subregs and subregion not in sel_subregs:
                     continue
 
-                # 4) Generar SIEMPRE 4 mixtures en el orden 1000,0100,0010,0001
-                for m_name in mixture_names_ordered:
-                    full_vector = [0] * TOTAL_LEN
+                # Vector Multi (pigmento + 4 mixture)
+                full_vector = [0] * TOTAL_LEN
+                full_vector[pigment_idx] = 1
+                full_vector[MIX_BASE + m_off] = 1
 
-                    # Pigmento
-                    full_vector[pigment_idx] = 1
-
-                    # Binder (bits detrás de pigmentos)
-                    b_off = binder_pos_by_name.get(forced_binder_name)
-                    if b_off is None:
-                        # fallback al primero disponible
-                        forced_binder_name, b_off = next(iter(binder_pos_by_name.items()))
-                    full_vector[BINDER_BASE + b_off] = 1
-
-                    # Mixture (bits a continuación del binder)
-                    m_off = mixture_pos_by_name[m_name]
-                    full_vector[MIX_BASE + m_off] = 1
-
-                    multilabel_rows.append({
-                        "File": str(file_name).strip(),
-                        "X": int(x),
-                        "Y": int(y),
-                        "Pigment Index": pigment_idx,
-                        "Binder": forced_binder_name,
-                        "Mixture": m_name,
-                        "Num. Binder": num_binder.get(forced_binder_name, 0),
-                        "Num. Mixture": num_mixture.get(m_name, 0),
-                        "Region": region,
-                        "Subregion": subregion,
-                        "Multi": full_vector,
-                    })
+                multilabel_rows.append({
+                    "File": str(file_name).strip(),
+                    "X": int(x),
+                    "Y": int(y),
+                    "Pigment Index": int(pigment_idx),
+                    "Mixture": m_name,
+                    "Num. Mixture": int(num_mixture.get(m_name, 0)),
+                    "Region": int(region),        # 1..4
+                    "Subregion": int(subregion),  # 1..4
+                    "Multi": full_vector,
+                })
 
         df_multilabel = pd.DataFrame(multilabel_rows)
 
-        # ====== CUBOS / SPECTRUM ======
+        # ====== cubos espectrales ======
         def build_cube_df(cube_type):
             dfs = []
             for file_name, h5_file in self.all_data.items():
@@ -406,13 +338,8 @@ class HSIDataProcessor:
                 base = pd.DataFrame({"File": str(file_name).strip(), "X": xs, "Y": ys})
                 val_cols = [f"{cube_type}_{i+1}" for i in range(bands)]
                 vals = pd.DataFrame(cube_data[ys, xs, :].astype(np.float32, copy=False), columns=val_cols)
-                df = pd.concat([base, vals], axis=1)
-                dfs.append(df)
-            if not dfs:
-                return pd.DataFrame()
-            df_type = pd.concat(dfs, ignore_index=True)
-            df_type = df_type.sort_values(["File", "Y", "X"], kind="mergesort").reset_index(drop=True)
-            return df_type
+                dfs.append(pd.concat([base, vals], axis=1))
+            return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
         cube_types = self.data_type
         if isinstance(cube_types, str):
@@ -420,28 +347,83 @@ class HSIDataProcessor:
         elif not isinstance(cube_types, (list, tuple)):
             cube_types = [str(cube_types)]
 
-        cube_frames = {t: build_cube_df(t) for t in cube_types}
-
         df_cubes = None
-        for t, df_t in cube_frames.items():
+        for t in cube_types:
+            df_t = build_cube_df(t)
             if df_t.empty:
                 continue
             cols = ["File", "X", "Y"] + [c for c in df_t.columns if c.startswith(f"{t}_")]
             df_t = df_t[cols]
             df_cubes = df_t if df_cubes is None else df_cubes.merge(df_t, on=["File", "X", "Y"], how="inner")
 
-        if not df_multilabel.empty:
-            df_multilabel = df_multilabel.sort_values(
-                ["File", "Region", "Mixture", "Y", "X"],
-                kind="mergesort"
-            ).reset_index(drop=True)
-            df_multilabel["Spectrum"] = (
-                df_multilabel.groupby("File").cumcount() + 1
-            ).astype(str).radd("Spectrum_")
-
+        # Merge multilabel + cubos
         if not df_multilabel.empty and df_cubes is not None and not df_cubes.empty:
             df_merged = df_multilabel.merge(df_cubes, on=["File", "X", "Y"], how="left")
         else:
             df_merged = df_cubes if (df_cubes is not None and not df_cubes.empty) else df_multilabel
 
-        return df_merged
+        # Etiquetas y orden inicial
+        if not df_multilabel.empty:
+            df_multilabel = df_multilabel.sort_values(
+                ["File", "Region", "Mixture", "Y", "X"], kind="mergesort"
+            ).reset_index(drop=True)
+            df_multilabel["Spectrum"] = (df_multilabel.groupby("File").cumcount() + 1)\
+                .astype(str).radd("Spectrum_")
+
+        # === Orden por nº de File y luego por campos relevantes ===
+        if df_merged is not None and not df_merged.empty:
+            df_merged = df_merged.assign(
+                _FileNum = df_merged["File"].map(self._extract_first_int)
+            ).sort_values(
+                ["_FileNum", "Region", "Subregion", "Mixture", "Y", "X"],
+                kind="mergesort"
+            ).drop(columns=["_FileNum"]).reset_index(drop=True)
+
+        # === Aplicar CUOTAS balanceadas (Subregión tiene prioridad) ===
+        df_out = df_merged
+        if self.subregion_row_quota:
+            parts = []
+            for s, sub_df in df_out.groupby("Subregion", sort=False):
+                target = int(self.subregion_row_quota.get(int(s), 0))
+                parts.append(self._balanced_quota_sample(sub_df, target) if target > 0 else sub_df)
+            df_out = pd.concat(parts, ignore_index=True)
+        elif self.region_row_quota:
+            parts = []
+            for r, reg_df in df_out.groupby("Region", sort=False):
+                target = int(self.region_row_quota.get(int(r), 0))
+                parts.append(self._balanced_quota_sample(reg_df, target) if target > 0 else reg_df)
+            df_out = pd.concat(parts, ignore_index=True)
+
+        # === Igualar por pigmento: sum(Reg 2+3+4) == Reg 1 ===
+        if df_out is not None and not df_out.empty:
+            df_out = self._equalize_r234_to_r1_by_pigment(df_out)
+
+        # Orden final de presentación
+        if df_out is not None and not df_out.empty:
+            df_out = df_out.assign(
+                _FileNum = df_out["File"].map(self._extract_first_int)
+            ).sort_values(
+                ["_FileNum", "Region", "Subregion", "Mixture", "Y", "X"],
+                kind="mergesort"
+            ).drop(columns=["_FileNum"]).reset_index(drop=True)
+
+        return df_out
+
+    def save_rows_for_file(self, target_file: str, out_csv_path: str):
+        df = self.dataframe()
+        df_t = df[df["File"] == target_file]
+        if df_t.empty:
+            print(f"[WARN] No hay filas para File == {target_file}")
+            return None
+        # Asegura carpeta
+        os.makedirs(os.path.dirname(out_csv_path) or ".", exist_ok=True)
+        df_t.to_csv(out_csv_path, index=False)
+        print(f"[OK] Guardado {len(df_t)} filas en: {out_csv_path}")
+        return out_csv_path
+
+
+
+
+
+
+

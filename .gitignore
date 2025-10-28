@@ -1,5 +1,4 @@
 database/
-*.h5
 *.npz
 *.npy
 *.pt

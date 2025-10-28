@@ -1,17 +1,18 @@
 import os
 import argparse
 import importlib
-from collections import defaultdict
 from typing import Tuple, Dict
 
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 
 from hsi_lab.data.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
-from hsi_lab.eval.report import plot_confusion_matrix
+from hsi_lab.eval import report as rep
+from sklearn.metrics import confusion_matrix, accuracy_score
+import csv
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ def import_model_trainer(name: str):
         f"Último error: {last_err}"
     )
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Features/targets
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,7 +48,7 @@ def build_Xy(df: pd.DataFrame):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Split estratificado 70/15/15 por pigmento
+# Splits
 # ─────────────────────────────────────────────────────────────────────────────
 def pigment_ids(df: pd.DataFrame, vars_: dict) -> np.ndarray:
     n_p = int(vars_["num_files"])
@@ -56,56 +58,34 @@ def pigment_ids(df: pd.DataFrame, vars_: dict) -> np.ndarray:
         pig.append(int(np.argmax(a[:n_p])))
     return np.array(pig, dtype=int)
 
-def balanced_test_split_by_pigment_mixture(
-    df: pd.DataFrame,
-    vars_: dict,
-    per_mix: int = 2,
-    seed: int = 42
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def stratified_balanced_split_by_file_pigment_mixture(df, vars_, per_mix=2, seed=42):
     rng = np.random.default_rng(seed)
 
-    # --- índices por (Pigment, Mixture) ---
-    grp = df.groupby(["Pigment Index", "Mixture"], sort=False).indices
-    counts = {k: len(v) for k, v in grp.items()}
+    # Genera etiqueta combinada
+    labels = df["File"].astype(str) + "_" + df["Pigment Index"].astype(str) + "_" + df["Mixture"].astype(str)
+    grp = df.groupby(labels)
 
-    if not counts:
-        raise ValueError("No hay grupos (Pigment Index, Mixture) para construir el test.")
+    train_idx, val_idx, test_idx = [], [], []
 
-    k_common = min(per_mix, min(counts.values()))
-    if k_common <= 0:
-        raise ValueError(
-            "Algún (Pigment, Mixture) no tiene filas. Revisa cuotas/filtros en processor."
-        )
-    if k_common < per_mix:
-        print(f"[WARN] Bajando test_per_mixture de {per_mix} a {k_common} "
-              f"por falta de filas en algún grupo.")
+    for name, g in grp:
+        idxs = g.index.to_numpy()
+        rng.shuffle(idxs)
 
-    # --- SAMPLE TEST FIJO Y BALANCEADO ---
-    test_idx_list = []
-    for (p, m), idxs in grp.items():
-        idxs = np.array(list(idxs))
-        if len(idxs) <= k_common:
-            test_idx_list.append(idxs)
+        if len(idxs) >= 4:
+            n_test = per_mix
+            n_val = max(1, int(0.15 * len(idxs)))
+            n_train = len(idxs) - n_test - n_val
         else:
-            test_idx_list.append(rng.choice(idxs, size=k_common, replace=False))
-    idx_test = np.concatenate(test_idx_list)
-    idx_test.sort()
+            n_test = min(per_mix, len(idxs)//2)
+            n_val = 1 if len(idxs) > 2 else 0
+            n_train = len(idxs) - n_test - n_val
 
-    # --- RESTO -> TRAIN/VAL (70/15 del total) ---
-    all_idx = np.arange(len(df))
-    mask = np.ones(len(df), dtype=bool)
-    mask[idx_test] = False
-    idx_rest = all_idx[mask]
+        train_idx.extend(idxs[:n_train])
+        val_idx.extend(idxs[n_train:n_train+n_val])
+        test_idx.extend(idxs[-n_test:])
 
-    # Queremos que al final aprox. 70/15/15 del TOTAL.
-    # Si TEST ocupa T, en el resto (R) usamos val_ratio = 0.15 / (0.70+0.15)
-    val_ratio = 0.15 / 0.85
-    y_rest_pig = pigment_ids(df.iloc[idx_rest], vars_)
-    idx_train, idx_val = train_test_split(
-        idx_rest, test_size=val_ratio, random_state=seed, stratify=y_rest_pig
-    )
+    return np.array(train_idx), np.array(val_idx), np.array(test_idx)
 
-    return np.asarray(idx_train), np.asarray(idx_val), np.asarray(idx_test)
 
 def stratified_split_70_15_15(
     df: pd.DataFrame,
@@ -121,17 +101,17 @@ def stratified_split_70_15_15(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Decoders SIN threshold (solo argmax para etiquetar)
+# Decoders (argmax)
 # ─────────────────────────────────────────────────────────────────────────────
 def decode_pigment_and_group(y_like: np.ndarray, n_p: int):
     pig = np.argmax(y_like[:, :n_p], axis=1)
-    mix_idx = np.argmax(y_like[:, n_p:n_p+4], axis=1)  # 0=Pure, 1..3=Mixtures
+    mix_idx = np.argmax(y_like[:, n_p:n_p+4], axis=1)
     group = np.where(mix_idx == 0, "Pure", "Mixture")
     return np.array([f"P{p+1:02d}_{g}" for p, g in zip(pig, group)])
 
 def decode_pigment_and_mix4(y_like: np.ndarray, n_p: int):
     pig = np.argmax(y_like[:, :n_p], axis=1)
-    mix_idx = np.argmax(y_like[:, n_p:n_p+4], axis=1)  # 0=Pure,1=M1,2=M2,3=M3
+    mix_idx = np.argmax(y_like[:, n_p:n_p+4], axis=1)
     names = np.array(["Pure", "M1", "M2", "M3"])
     return np.array([f"P{p+1:02d}_{names[m]}" for p, m in zip(pig, mix_idx)])
 
@@ -141,7 +121,7 @@ def decode_mix_group(y_like: np.ndarray, n_p: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Exportación de splits e índices a CSV (ordenados por File)
+# Exportación de splits (SOLO train.csv, val.csv, test.csv)
 # ─────────────────────────────────────────────────────────────────────────────
 def export_splits_csv(
     df: pd.DataFrame,
@@ -169,8 +149,7 @@ def export_splits_csv(
     # --- Decodificación de y_pred (solo filas válidas; el resto queda vacío) ---
     def safe_decode(decoder_fn, y_like):
         out = np.array([""] * len(y_like), dtype=object)  # vacío por defecto
-        # Una fila es válida si todas sus posiciones son finitas (sin NaN/inf)
-        valid = np.isfinite(y_like).all(axis=1)
+        valid = np.isfinite(y_like).all(axis=1)           # filas sin NaN/inf
         if valid.any():
             out[valid] = decoder_fn(y_like[valid], n_p)
         return out
@@ -187,64 +166,169 @@ def export_splits_csv(
     pig_true, mix_true = zip(*[split_pm(s) for s in y_true_4N])
     pig_pred, mix_pred = zip(*[split_pm(s) for s in y_pred_4N])
 
-    # DF maestro (train/val/test concatenados, con tag de split)
-    idx_all = np.concatenate([idx_train, idx_val, idx_test])
-    split_tag = np.array(["train"] * len(idx_train) + ["val"] * len(idx_val) + ["test"] * len(idx_test))
-
-    base = df.iloc[idx_all].copy()
+    # Construye un dataframe base con todas las filas y columnas calculadas
+    base = df.copy()
     base = base.assign(
-        split = split_tag,
-        y_true_2N = y_true_2N[idx_all],
-        y_pred_2N = y_pred_2N[idx_all],
-        y_true_4N = y_true_4N[idx_all],
-        y_pred_4N = y_pred_4N[idx_all],
-        pig_true  = np.array(pig_true, dtype=object)[idx_all],
-        mix_true  = np.array(mix_true, dtype=object)[idx_all],
-        pig_pred  = np.array(pig_pred, dtype=object)[idx_all],
-        mix_pred  = np.array(mix_pred, dtype=object)[idx_all],
+        y_true_2N = y_true_2N,
+        y_pred_2N = y_pred_2N,
+        y_true_4N = y_true_4N,
+        y_pred_4N = y_pred_4N,
+        pig_true  = np.array(pig_true, dtype=object),
+        mix_true  = np.array(mix_true, dtype=object),
+        pig_pred  = np.array(pig_pred, dtype=object),
+        mix_pred  = np.array(mix_pred, dtype=object),
     )
 
-    # Guardado de cada split ordenado por File
+    # Guardado de cada split (ordenado por File si existe)
     paths = {}
-    def save_subset(name: str):
-        d = base.loc[base["split"] == name].sort_values("File")
+    def save_subset(indices: np.ndarray, name: str):
+        d = base.iloc[np.sort(indices)].copy()
+        if "File" in d.columns:
+            d = d.sort_values("File")
         path = os.path.join(out_dir, f"{name}.csv")
         d.to_csv(path, index=False)
         paths[name] = path
 
-    save_subset("train")
-    save_subset("val")
-    save_subset("test")
-
-    # Maestro
-    path_all = os.path.join(out_dir, "all_splits.csv")
-    base.sort_values(["split", "File"]).to_csv(path_all, index=False)
-    paths["all_splits"] = path_all
-
-    # Índices sueltos
-    pd.DataFrame({"index": np.sort(idx_train)}).to_csv(os.path.join(out_dir, "idx_train.csv"), index=False)
-    pd.DataFrame({"index": np.sort(idx_val)}).to_csv(os.path.join(out_dir, "idx_val.csv"), index=False)
-    pd.DataFrame({"index": np.sort(idx_test)}).to_csv(os.path.join(out_dir, "idx_test.csv"), index=False)
-    paths["idx_train"] = os.path.join(out_dir, "idx_train.csv")
-    paths["idx_val"]   = os.path.join(out_dir, "idx_val.csv")
-    paths["idx_test"]  = os.path.join(out_dir, "idx_test.csv")
+    save_subset(idx_train, "train")
+    save_subset(idx_val,   "val")
+    save_subset(idx_test,  "test")
 
     return paths
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cuotas por región (por archivo) + Igualado GLOBAL
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Cuotas por región/subregión (por archivo) + Igualado GLOBAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _balanced_take(df_grp: pd.DataFrame, total: int, by_cols, seed: int = 42) -> pd.DataFrame:
+    """Selecciona hasta 'total' filas de df_grp balanceando por las columnas dadas."""
+    if total <= 0 or len(df_grp) <= total:
+        return df_grp
+
+    rng = np.random.default_rng(seed)
+    strata = [(k, g.index.to_numpy()) for k, g in df_grp.groupby(by_cols, sort=False)]
+    S = len(strata)
+    base, rem = divmod(total, S)
+    order = np.arange(S)
+    rng.shuffle(order)
+    take = np.full(S, base, int)
+    take[order[:rem]] += 1
+
+    chosen = []
+    for (_, idxs), k in zip(strata, take):
+        if len(idxs) <= k:
+            chosen.append(idxs)
+        else:
+            chosen.append(rng.choice(idxs, size=k, replace=False))
+    sel = np.concatenate(chosen) if chosen else np.array([], dtype=int)
+    rng.shuffle(sel)
+    return df_grp.loc[sel]
+
+
+def apply_per_file_region_quotas(df: pd.DataFrame, vars_: dict, seed: int = 42) -> pd.DataFrame:
+    """
+    Aplica cuotas por archivo, según region_row_quota o subregion_row_quota si está definido.
+    Ejemplo:
+      region_row_quota = {1:300, 2:100, 3:100, 4:100}
+      → Cada archivo ("File") tomará como máximo esas filas por región.
+    """
+    # Prioridad: subregion_row_quota > region_row_quota
+    quotas = vars_.get("subregion_row_quota", {}) or vars_.get("region_row_quota", {})
+    if not quotas:
+        print("[INFO] No se aplican cuotas por región/subregión (diccionario vacío).")
+        return df
+
+    parts = []
+    for f, df_file in df.groupby("File", sort=False):
+        sub_parts = []
+        if "Subregion" in df_file.columns and vars_.get("subregion_row_quota"):
+            # Aplica por subregión
+            for (r, s), df_sub in df_file.groupby(["Region", "Subregion"], sort=False):
+                q = int(quotas.get(int(s), 0)) or int(quotas.get(int(r), 0))
+                df_sel = _balanced_take(df_sub, q, by_cols=["Pigment Index", "Mixture"], seed=seed)
+                sub_parts.append(df_sel)
+        else:
+            # Aplica solo por región
+            for r, df_reg in df_file.groupby("Region", sort=False):
+                q = int(quotas.get(int(r), 0))
+                df_sel = _balanced_take(df_reg, q, by_cols=["Pigment Index", "Mixture"], seed=seed)
+                sub_parts.append(df_sel)
+
+        df_used_file = pd.concat(sub_parts, ignore_index=True)
+        parts.append(df_used_file)
+
+    df_out = pd.concat(parts, ignore_index=True)
+    print(f"[INFO] Cuotas aplicadas por archivo con {quotas}")
+    print(f"[INFO] Filas originales: {len(df)}, tras cuotas: {len(df_out)}")
+    return df_out
+
+
+def save_region_subregion_usage(df_raw: pd.DataFrame, df_used: pd.DataFrame, out_path: str):
+    """Genera CSV con resumen de filas totales y usadas por región, subregión y archivo."""
+    has_sub = "Subregion" in df_raw.columns or "Subregion" in df_used.columns
+
+    raw = df_raw.copy()
+    used = df_used.copy()
+
+    if has_sub:
+        if "Subregion" not in raw.columns:
+            raw["Subregion"] = np.nan
+        if "Subregion" not in used.columns:
+            used["Subregion"] = np.nan
+        keys = ["File", "Region", "Subregion"]
+    else:
+        keys = ["File", "Region"]
+
+    total = raw.groupby(keys, dropna=False).size().rename("total_rows").reset_index()
+    usedc = used.groupby(keys, dropna=False).size().rename("used_rows").reset_index()
+
+    summary = pd.merge(total, usedc, on=keys, how="outer")
+    summary["total_rows"] = summary["total_rows"].fillna(0).astype(int)
+    summary["used_rows"] = summary["used_rows"].fillna(0).astype(int)
+
+    # Totales por región y subregión (sin "File")
+    region_summary = summary.groupby(keys[1:], as_index=False)[["total_rows", "used_rows"]].sum()
+    region_summary["File"] = "ALL_FILES"
+    summary = pd.concat([summary, region_summary], ignore_index=True)
+
+    summary = summary.sort_values(keys).reset_index(drop=True)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    summary.to_csv(out_path, index=False)
+    print(f"[SAVE] Region/Subregion usage -> {out_path}")
+
+
+def equalize_across_files_by_pigment(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
+    out = []
+    for p, dfp in df.groupby("Pigment Index", sort=False):
+        counts = dfp.assign(is_r1=dfp["Region"]==1, is_r234=dfp["Region"].isin([2,3,4])) \
+                    .groupby("File").agg(n1=("is_r1","sum"), n234=("is_r234","sum"))
+        T = int(counts[["n1","n234"]].min(axis=1).min())
+        if T <= 0:
+            out.append(dfp); continue
+        for f, dff in dfp.groupby("File", sort=False):
+            r1   = dff[dff["Region"] == 1]
+            r234 = dff[dff["Region"].isin([2,3,4])]
+            r1_sel   = _balanced_take(r1,   min(len(r1),   T), by_cols=["Mixture"], seed=seed)
+            r234_sel = _balanced_take(r234, min(len(r234), T), by_cols=["Mixture","Region"], seed=seed)
+            others   = dff[~dff["Region"].isin([1,2,3,4])]
+            out.append(pd.concat([r1_sel, r234_sel, others], ignore_index=True))
+    return pd.concat(out, ignore_index=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_args():
-    p = argparse.ArgumentParser(
-        description="Train HSI models + export CMs (4N, 2N, 2) y CSVs de splits (ordenados por File)."
-    )
+    p = argparse.ArgumentParser(description="Train HSI models + export CMs y CSVs de splits.")
     p.add_argument("--outputs-dir", type=str, default=None)
-    p.add_argument("--models", type=str, required=True,
-                   help="Lista separada por comas (ej: DNN,cnn_baseline o rutas de módulo completas)")
+    p.add_argument("--models", type=str, required=True)
     p.add_argument("--trials", type=int, default=None)
     p.add_argument("--epochs", type=int, default=None)
     return p.parse_args()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # main
@@ -254,37 +338,53 @@ def main():
     out_dir = args.outputs_dir or variables.get("outputs_dir") or "outputs"
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1) Datos desde el processor (si éste filtra/ordena, ya viene aplicado)
+    # 1) Carga datos
     pr = HSIDataProcessor(variables)
     pr.load_h5_files()
-    df = pr.dataframe()
 
-    # 2) Split
+    # 2) Bruto (sin filtros/cuotas/igualado)
+    df_raw = pr.dataframe(mode="raw")
+
+    # 3) Cuotas por región por archivo
+    region_quotas = variables.get("region_row_quota", {}) or {}
+    APPLY_QUOTAS = variables.get("apply_region_quotas", True)
+    df_after_quotas = apply_per_file_region_quotas(
+    df_raw, variables, seed=variables.get("balance_seed", 42)
+    ) if (APPLY_QUOTAS and region_quotas) else df_raw
+
+    # 4) Igualado GLOBAL por pigmento
+    DO_EQUALIZE_GLOBAL = variables.get("equalize_across_files", True)
+    df_used = equalize_across_files_by_pigment(
+        df_after_quotas, seed=variables.get("balance_seed", 42)
+    ) if DO_EQUALIZE_GLOBAL else df_after_quotas
+
+    usage_csv = os.path.join(out_dir, "region_subregion_usage.csv")
+    save_region_subregion_usage(df_raw, df_used, usage_csv)
+
+    # 5) Split
     if variables.get("balance_test_by_mixture", True):
-        idx_train, idx_val, idx_test = balanced_test_split_by_pigment_mixture(
-            df,
+        idx_train, idx_val, idx_test = stratified_balanced_split_by_file_pigment_mixture(
+            df_used,
             variables,
             per_mix=int(variables.get("test_per_mixture", 2)),
             seed=variables.get("seed", 42),
         )
     else:
         idx_train, idx_val, idx_test = stratified_split_70_15_15(
-            df, variables, seed=variables.get("seed", 42)
+            df_used, variables, seed=variables.get("seed", 42)
         )
 
-    # 3) X/y
-    X, y, input_len = build_Xy(df)
+    # 6) X/y
+    X, y, input_len = build_Xy(df_used)
     X_train, X_val, X_test = X[idx_train], X[idx_val], X[idx_test]
     y_train, y_val, y_test = y[idx_train], y[idx_val], y[idx_test]
-    print(f"[DATA] input_len={input_len} | X_train={X_train.shape} | "
-          f"X_val={X_val.shape} | X_test={X_test.shape}")
+    print(f"[DATA] input_len={input_len} | X_train={X_train.shape} | X_val={X_val.shape} | X_test={X_test.shape}")
 
-    # 4) Entrenar y evaluar
+    # 7) Entrenar y evaluar
     model_names = [m.strip() for m in args.models.split(",") if m.strip()]
     for name in model_names:
         print(f"[TRAIN] {name}")
         tune = import_model_trainer(name)
-
         res = tune(
             X_train, y_train, X_val, y_val,
             input_len=input_len, num_classes=y.shape[1],
@@ -295,90 +395,147 @@ def main():
         )
         model = res[0] if isinstance(res, tuple) else res
 
-        # Predicciones de test (probabilidades); no tocamos ni umbralizamos
+        # === PREDICCIONES ===
         y_pred_prob = model.predict(X_test, verbose=0)
-        if not isinstance(y_pred_prob, np.ndarray):
-            y_pred_prob = np.concatenate(y_pred_prob, axis=1)
-
-        # === Decodificación SOLO con argmax (sin threshold) ===
+        y_pred_bin = (y_pred_prob > 0.5).astype(int)
         n_p = int(variables["num_files"])
-        y_true_2N = decode_pigment_and_group(y_test, n_p)
-        y_pred_2N = decode_pigment_and_group(y_pred_prob, n_p)
 
-        y_true_4N = decode_pigment_and_mix4(y_test, n_p)
-        y_pred_4N = decode_pigment_and_mix4(y_pred_prob, n_p)
+        # === MÉTRICAS BIT A BIT ===
+        TP = np.sum((y_test == 1) & (y_pred_bin == 1))
+        TN = np.sum((y_test == 0) & (y_pred_bin == 0))
+        FP = np.sum((y_test == 0) & (y_pred_bin == 1))
+        FN = np.sum((y_test == 1) & (y_pred_bin == 0))
 
-        y_true_mix = decode_mix_group(y_test, n_p)
-        y_pred_mix = decode_mix_group(y_pred_prob, n_p)
+        bit_acc = (TP + TN) / (TP + TN + FP + FN)
+        print(f"\n[INFO] Bitwise Accuracy (multi-label real): {bit_acc:.4f}")
 
-        # === Matrices de confusión (normalize='true' solo para visual) ===
-        sub_out = os.path.join(out_dir, name, "conf_mats")
-        os.makedirs(sub_out, exist_ok=True)
+        # === CLASES BASE ===
+        classes_pig = [f"P{i+1:02d}" for i in range(n_p)]
+        classes_mix = ["Pure", "M1", "M2", "M3"]
 
-        # 4N
-        classes_4N = [f"P{i+1:02d}_{s}" for i in range(n_p) for s in ["Pure","M1","M2","M3"]]
-        idx_4N = {c: i for i, c in enumerate(classes_4N)}
-        ti_4N = np.array([idx_4N[x] for x in y_true_4N])
-        pi_4N = np.array([idx_4N[x] for x in y_pred_4N])
-        cm_4N = sk_confusion_matrix(ti_4N, pi_4N,
-                                    labels=list(range(len(classes_4N))), normalize='true')
-        plot_confusion_matrix(
-            cm_4N, classes_4N,
-            "Global 4-casos (Pure/M1/M2/M3 por pigmento)",
-            os.path.join(sub_out, f"{name}_cm_GLOBAL_4CASES.png")
+        # === 1️⃣ MATRIZ: SOLO PIGMENTS ===
+        pig_true = np.argmax(y_test[:, :n_p], axis=1)
+        pig_pred = np.argmax(y_pred_bin[:, :n_p], axis=1)
+        cm_pig, used_pig = rep.confusion_from_labels(pig_true, pig_pred, classes=classes_pig)
+        rep.plot_confusion_matrix(cm_pig, used_pig,
+            "Confusión entre Pigmentos (bitwise multi-label)",
+            os.path.join(sub_out, f"{name}_cm_PIGMENTS.png"))
+
+        # === 2️⃣ MATRIZ: SOLO MIXTURES (sin Pure) ===
+        mix_true_full = np.argmax(y_test[:, n_p:], axis=1)
+        mix_pred_full = np.argmax(y_pred_bin[:, n_p:], axis=1)
+
+        # Filtramos solo las filas donde no sea Pure
+        mask_mix = mix_true_full != 0
+        mix_true = mix_true_full[mask_mix]
+        mix_pred = mix_pred_full[mask_mix]
+
+        classes_mix_wo_pure = ["M1", "M2", "M3"]
+        cm_mix, used_mix = rep.confusion_from_labels(
+            mix_true - 1, mix_pred - 1, classes=classes_mix_wo_pure
         )
+        rep.plot_confusion_matrix(cm_mix, used_mix,
+            "Confusión entre Mezclas (M1–M3, bitwise multi-label)",
+            os.path.join(sub_out, f"{name}_cm_MIXTURES_only.png"))
 
-        # 2N
-        classes_2N = [f"P{i+1:02d}_Pure" for i in range(n_p)] + \
-                     [f"P{i+1:02d}_Mixture" for i in range(n_p)]
-        idx_2N = {c: i for i, c in enumerate(classes_2N)}
-        ti_2N = np.array([idx_2N[x] for x in y_true_2N])
-        pi_2N = np.array([idx_2N[x] for x in y_pred_2N])
-        cm_2N = sk_confusion_matrix(ti_2N, pi_2N,
-                                    labels=list(range(len(classes_2N))), normalize='true')
-        plot_confusion_matrix(
-            cm_2N, classes_2N,
-            "Global (Pigment + Pure/Mixture)",
-            os.path.join(sub_out, f"{name}_cm_GLOBAL.png")
-        )
+        # === 3️⃣ MATRIZ: PURE vs MIXTURE ===
+        pure_true = np.where(mix_true_full == 0, "Pure", "Mixture")
+        pure_pred = np.where(mix_pred_full == 0, "Pure", "Mixture")
+        classes_puremix = ["Pure", "Mixture"]
+        cm_puremix, used_pm = rep.confusion_from_labels(pure_true, pure_pred, classes=classes_puremix)
+        rep.plot_confusion_matrix(cm_puremix, used_pm,
+            "Confusión global Pure vs Mixture (multi-label)",
+            os.path.join(sub_out, f"{name}_cm_PURE_vs_MIXTURE.png"))
 
-        # 2 clases (Pure vs Mixture)
-        classes_mix = ["Pure", "Mixture"]
-        idx_mix = {"Pure": 0, "Mixture": 1}
-        ti_m = np.array([idx_mix[x] for x in y_true_mix])
-        pi_m = np.array([idx_mix[x] for x in y_pred_mix])
-        cm_m = sk_confusion_matrix(ti_m, pi_m, labels=[0, 1], normalize='true')
-        plot_confusion_matrix(
-            cm_m, classes_mix,
-            "Mixture Only (Pure vs Mixture)",
-            os.path.join(sub_out, f"{name}_cm_MIXTURE.png")
-        )
+        # === 4️⃣ MATRIZ: FULL Pigment + Mix4 (como antes, pero bitwise coherente) ===
+        pig_idx_true = np.argmax(y_test[:, :n_p], axis=1)
+        mix_idx_true = np.argmax(y_test[:, n_p:], axis=1)
+        pig_idx_pred = np.argmax(y_pred_bin[:, :n_p], axis=1)
+        mix_idx_pred = np.argmax(y_pred_bin[:, n_p:], axis=1)
 
-        # === CSVs de splits e índices (ordenados por File) ===
-        csv_out_dir = os.path.join(out_dir, name, "datasets")
-        os.makedirs(csv_out_dir, exist_ok=True)
+        y_true_full = [f"P{p+1:02d}_{classes_mix[m]}" for p, m in zip(pig_idx_true, mix_idx_true)]
+        y_pred_full = [f"P{p+1:02d}_{classes_mix[m]}" for p, m in zip(pig_idx_pred, mix_idx_pred)]
 
-        # --- Guardar el dataframe usado en la MISMA carpeta ---
+        classes_full = [f"P{i+1:02d}_{s}" for i in range(n_p) for s in classes_mix]
+        cm_full, used_full = rep.confusion_from_labels(y_true_full, y_pred_full, classes=classes_full)
+        rep.plot_confusion_matrix(cm_full, used_full,
+            "Confusión completa Pigment + Mix4 (bitwise multi-label)",
+            os.path.join(sub_out, f"{name}_cm_FULL_4CASES.png"))
+
+        # === ACCURACY GLOBAL ===
+        eval_res = model.evaluate(X_test, y_test, verbose=0)
+        keras_acc = eval_res[1] if isinstance(eval_res, (list, tuple)) else float(eval_res)
+        print(f"Accuracy (keras evaluate) = {keras_acc:.4f}")
+        print(f"Accuracy (bitwise, manual) = {bit_acc:.4f}")
+        print(f"Diferencia (|eval - bitwise|) = {abs(keras_acc - bit_acc):.4f}\n")
+
+        print("[INFO] ==============================================\n")
+
+
+
+        # Mostramos la comparación explícita
+        print(f"Accuracy (Pigment+Mix4, decodificada) = {acc_4N:.4f}")
+        print(f"Accuracy desde CM 4N = {acc_from_cm_4N:.4f}")
+        print(f"Diferencia (|eval - CM|) = {abs(keras_acc - acc_from_cm_4N):.4f}")
+        print(f"Diferencia (|eval - 4N|) = {abs(keras_acc - acc_4N):.4f}")
+        print(f"Accuracy (Pigment+Group2) = {acc_2N:.4f}")
+        print(f"Accuracy (Pure vs Mixture) = {acc_mix:.4f}")
+        print("[INFO] ==============================================\n")
+
+        # ─────────────────────────────────────────────────────────────
+        # Guardar resultados y comparación en CSV
+        # ─────────────────────────────────────────────────────────────
+        metrics_out_dir = os.path.join(out_dir, name)
+        os.makedirs(metrics_out_dir, exist_ok=True)
+        csv_path = os.path.join(metrics_out_dir, "results_summary.csv")
+
+        header = [
+            "model_name",
+            "keras_acc",
+            "acc_4N",
+            "acc_from_cm_4N",
+            "diff_eval_vs_cm",
+            "diff_eval_vs_4N",
+            "acc_2N",
+            "acc_mix"
+        ]
+        row = [
+            name,
+            round(float(keras_acc), 6),
+            round(float(acc_4N), 6),
+            round(float(acc_from_cm_4N), 6),
+            round(abs(keras_acc - acc_from_cm_4N), 6),
+            round(abs(keras_acc - acc_4N), 6),
+            round(float(acc_2N), 6),
+            round(float(acc_mix), 6)
+        ]
+
+        write_header = not os.path.exists(csv_path)
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(header)
+            writer.writerow(row)
+
+        print(f"[SAVE] Resultados comparativos -> {csv_path}")
+
+
+        # CSVs usados (solo el dataframe final por modelo)
+        csv_out_dir = os.path.join(out_dir, name, "datasets"); os.makedirs(csv_out_dir, exist_ok=True)
         df_used_path = os.path.join(csv_out_dir, "dataframe_used.csv")
-        df.to_csv(df_used_path, index=False)
+        df_used.to_csv(df_used_path, index=False)
         print(f"[SAVE] DataFrame usado -> {df_used_path}")
 
-        # Construye y_pred_prob_full del tamaño total y rellena sólo TEST
         y_pred_prob_full = np.full_like(y, fill_value=np.nan, dtype=np.float32)
-        y_pred_prob_full[idx_test] = y_pred_prob  # preds sólo para test
-
-        paths = export_splits_csv(
-            df=df,
-            y_true=y,
-            y_pred_prob=y_pred_prob_full,
-            idx_train=idx_train,
-            idx_val=idx_val,
-            idx_test=idx_test,
-            out_dir=csv_out_dir,
-            vars_=variables,
+        y_pred_prob_full[idx_test] = y_pred_prob
+        _ = export_splits_csv(
+            df=df_used, y_true=y, y_pred_prob=y_pred_prob_full,
+            idx_train=idx_train, idx_val=idx_val, idx_test=idx_test,
+            out_dir=csv_out_dir, vars_=variables,
         )
-        print(f"[SAVE] CSV splits -> {paths}")
-
 
 if __name__ == "__main__":
     main()
+
+
+
