@@ -77,9 +77,6 @@ def plot_confusion_matrix(cm, classes, title, save_path, annotate_percent=True):
 # === CONSTRUCTORES DE MATRICES (NO transforman y_true/y_pred) ===========
 # ========================================================================
 def _labels_to_indices(y_true_labels, y_pred_labels, classes=None):
-    """
-    Convierte etiquetas string en índices enteros de clase coherentes entre y_true e y_pred.
-    """
     y_true_labels = np.asarray(y_true_labels, dtype=object)
     y_pred_labels = np.asarray(y_pred_labels, dtype=object)
 
@@ -103,7 +100,6 @@ def _labels_to_indices(y_true_labels, y_pred_labels, classes=None):
 
 
 def confusion_from_labels(y_true, y_pred, classes):
-    """Genera matriz de confusión y etiquetas usadas."""
     from sklearn.metrics import confusion_matrix
     cm = confusion_matrix(y_true, y_pred, labels=classes)
     used = classes
@@ -116,9 +112,8 @@ def confusion_from_labels(y_true, y_pred, classes):
 
 
 
-
 # =========================================================
-# === MÉTRICAS (corregidas) ===
+# === MÉTRICAS (versión robusta, sin warnings multietiqueta) ===
 # =========================================================
 def compute_metrics(y_true, y_pred_bin, y_pred_prob):
     from sklearn.metrics import (
@@ -127,9 +122,11 @@ def compute_metrics(y_true, y_pred_bin, y_pred_prob):
         average_precision_score
     )
     import numpy as np
+    import warnings
 
     metrics = {}
 
+    # Binariza (por si acaso)
     y_true_b = (y_true > 0.5).astype(bool)
     y_pred_b = (y_pred_bin > 0.5).astype(bool)
 
@@ -141,24 +138,34 @@ def compute_metrics(y_true, y_pred_bin, y_pred_prob):
     metrics["keras_like_acc"]      = (y_true_b == y_pred_b).mean(axis=1).mean()
     metrics["hamming_acc"]         = 1 - hamming_loss(y_true_b, y_pred_b)
 
-    # 🔸 Probabilistic metrics
-    try:
-        metrics["roc_auc"] = roc_auc_score(y_true_b, np.clip(y_pred_prob, 0, 1), average="micro")
-    except ValueError:
-        metrics["roc_auc"] = np.nan
+    # 🔸 Probabilistic metrics (sin warnings para multietiqueta)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="The y_prob values do not sum to one")
+        try:
+            metrics["roc_auc"] = roc_auc_score(y_true_b, np.clip(y_pred_prob, 0, 1), average="micro")
+        except ValueError:
+            metrics["roc_auc"] = np.nan
 
-    try:
-        metrics["log_loss"] = log_loss(y_true_b.astype(int), np.clip(y_pred_prob, 1e-7, 1 - 1e-7))
-    except ValueError:
-        metrics["log_loss"] = np.nan
+        try:
+            metrics["avg_precision"] = average_precision_score(
+                y_true_b, np.clip(y_pred_prob, 0, 1), average="micro"
+            )
+        except ValueError:
+            metrics["avg_precision"] = np.nan
+
+        try:
+            metrics["log_loss"] = log_loss(
+                y_true_b.astype(int), np.clip(y_pred_prob, 1e-7, 1 - 1e-7)
+            )
+        except ValueError:
+            metrics["log_loss"] = np.nan
 
     # ⚙️ Classification metrics
-    metrics["f1"]            = f1_score(y_true_b, y_pred_b, average="micro", zero_division=0)
-    metrics["precision"]     = precision_score(y_true_b, y_pred_b, average="micro", zero_division=0)
-    metrics["recall"]        = recall_score(y_true_b, y_pred_b, average="micro", zero_division=0)
-    metrics["avg_precision"] = average_precision_score(y_true_b, np.clip(y_pred_prob, 0, 1), average="micro")
+    metrics["f1"]        = f1_score(y_true_b, y_pred_b, average="micro", zero_division=0)
+    metrics["precision"] = precision_score(y_true_b, y_pred_b, average="micro", zero_division=0)
+    metrics["recall"]    = recall_score(y_true_b, y_pred_b, average="micro", zero_division=0)
 
-    # 🧾 Descriptive phrases (short, report-friendly)
+    # 🧾 Descriptive phrases (report-friendly)
     descriptions = {
         "non_zero_acc_sample": "Fraction of samples where at least one true label was correctly predicted.",
         "non_zero_acc_label":  "Fraction of labels with at least one correct prediction across all samples.",
@@ -166,15 +173,16 @@ def compute_metrics(y_true, y_pred_bin, y_pred_prob):
         "general_acc":         "Overall accuracy across all labels (flattened comparison).",
         "keras_like_acc":      "Mean sample-wise accuracy, similar to Keras behavior.",
         "hamming_acc":         "Average per-label accuracy (1 − Hamming loss).",
-        "roc_auc":             "Area under the ROC curve (probabilistic ranking performance).",
+        "roc_auc":             "Area under the ROC curve (multi-label).",
+        "avg_precision":       "Average precision (AUC-PR, multi-label).",
         "log_loss":            "Penalty for confident but incorrect predictions (logarithmic loss).",
-        "f1":                  "Harmonic mean of precision and recall (F1 micro).",
+        "f1":                  "Harmonic mean of precision and recall (micro-average).",
         "precision":           "Fraction of predicted positives that were correct.",
         "recall":              "Fraction of true positives that were successfully detected.",
-        "avg_precision":       "Average precision (area under the precision–recall curve).",
     }
 
     return metrics, descriptions
+
 
 
 # =========================================================

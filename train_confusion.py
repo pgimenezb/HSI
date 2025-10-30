@@ -108,64 +108,213 @@ def decode_pigment_and_mix4(y_like: np.ndarray, n_p: int):
 # ─────────────────────────────────────────────────────────────────────────────
 # Splits exportations (argmax)
 # ─────────────────────────────────────────────────────────────────────────────
-def export_splits_csv(df: pd.DataFrame, y_true: np.ndarray, y_pred_prob: np.ndarray, idx_train: np.ndarray, idx_val: np.ndarray, idx_test: np.ndarray, out_dir: str, vars_: dict,) -> dict:
+def main():
+    args = parse_args()
+    out_dir = args.outputs_dir or variables.get("outputs_dir") or "outputs"
     os.makedirs(out_dir, exist_ok=True)
 
-    n_p = int(vars_["num_files"])
-    N, D = y_true.shape
+    # 1️⃣ Cargar datos
+    pr = HSIDataProcessor(variables)
+    pr.load_h5_files()
+    df_raw = pr.dataframe(mode="raw")
 
-    if y_pred_prob is None:
-        y_pred_prob = np.full((N, D), np.nan, dtype=np.float32)
-
-    y_true_2N = decode_pigment_and_group(y_true, n_p)
-    y_true_4N = decode_pigment_and_mix4(y_true, n_p)
-
-    def safe_decode(decoder_fn, y_like):
-        out = np.array([""] * len(y_like), dtype=object)
-        valid = np.isfinite(y_like).all(axis=1)
-        if valid.any():
-            out[valid] = decoder_fn(y_like[valid], n_p)
-        return out
-
-    y_pred_2N = safe_decode(decode_pigment_and_group, y_pred_prob)
-    y_pred_4N = safe_decode(decode_pigment_and_mix4, y_pred_prob)
-
-    def split_pm(lbl_4n: str):
-        if not lbl_4n:
-            return "", ""
-        px, m = lbl_4n.split("_", 1)
-        return px, m
-
-    pig_true, mix_true = zip(*[split_pm(s) for s in y_true_4N])
-    pig_pred, mix_pred = zip(*[split_pm(s) for s in y_pred_4N])
-
-    base = df.copy()
-    base = base.assign(
-        y_true_2N=y_true_2N,
-        y_pred_2N=y_pred_2N,
-        y_true_4N=y_true_4N,
-        y_pred_4N=y_pred_4N,
-        pig_true=np.array(pig_true, dtype=object),
-        mix_true=np.array(mix_true, dtype=object),
-        pig_pred=np.array(pig_pred, dtype=object),
-        mix_pred=np.array(mix_pred, dtype=object),
+    # 2️⃣ Aplicar cuotas por región/subregión
+    APPLY_QUOTAS = variables.get("apply_region_quotas", True)
+    region_quotas = variables.get("region_row_quota", {}) or {}
+    df_after_quotas = (
+        apply_per_file_region_quotas(df_raw, variables)
+        if (APPLY_QUOTAS and region_quotas)
+        else df_raw
     )
 
-    paths = {}
+    # 3️⃣ Igualado global por pigmento
+    DO_EQUALIZE_GLOBAL = variables.get("equalize_across_files", True)
+    df_used = (
+        equalize_across_files_by_pigment(df_after_quotas)
+        if DO_EQUALIZE_GLOBAL
+        else df_after_quotas
+    )
 
-    def save_subset(indices: np.ndarray, name: str):
-        d = base.iloc[np.sort(indices)].copy()
-        if "File" in d.columns:
-            d = d.sort_values("File")
-        path = os.path.join(out_dir, f"{name}.csv")
-        d.to_csv(path, index=False)
-        paths[name] = path
+    # 4️⃣ Split del dataset
+    if variables.get("balance_test_by_mixture", True):
+        idx_train, idx_val, idx_test = stratified_balanced_split_by_file_pigment_mixture(
+            df_used,
+            variables,
+            per_mix=int(variables.get("test_per_mixture", 2)),
+            seed=variables.get("seed", 42),
+        )
+    else:
+        idx_train, idx_val, idx_test = stratified_split_70_15_15(
+            df_used, variables, seed=variables.get("seed", 42)
+        )
 
-    save_subset(idx_train, "train")
-    save_subset(idx_val, "val")
-    save_subset(idx_test, "test")
+    # 5️⃣ Construir X/y
+    X, y, input_len = build_Xy(df_used)
+    X_train, X_val, X_test = X[idx_train], X[idx_val], X[idx_test]
+    y_train, y_val, y_test = y[idx_train], y[idx_val], y[idx_test]
 
-    return paths
+    print(f"[DATA] input_len={input_len} | X_train={X_train.shape} | X_val={X_val.shape} | X_test={X_test.shape}")
+
+    # 6️⃣ Entrenamiento
+    model_names = [m.strip() for m in args.models.split(",") if m.strip()]
+
+    for name in model_names:
+        print(f"\n[TRAIN] {name}")
+        tune = import_model_trainer(name)
+        res = tune(
+            X_train, y_train, X_val, y_val,
+            input_len=input_len, num_classes=y.shape[1],
+            trials=args.trials or variables.get("trials"),
+            epochs=args.epochs or variables.get("epochs"),
+            batch_size=args.batch_size or variables.get("batch_size"),
+            n_jobs=variables.get("optuna_n_jobs", 1),
+            seed=variables.get("seed", 42),
+        )
+
+        model = res[0] if isinstance(res, tuple) else res
+        y_pred_prob = model.predict(X_test, verbose=0)
+
+        base_out = os.path.join(out_dir, f"{name}")
+        os.makedirs(base_out, exist_ok=True)
+
+        # === Guardar DataFrame usado ===
+        df_used_path = os.path.join(base_out, f"{name}_dataframe_used.csv")
+        df_used.to_csv(df_used_path, index=False)
+        print(f"[SAVE] DataFrame -> {df_used_path}")
+
+        # === Guardar uso de región/subregión ===
+        region_usage_path = os.path.join(base_out, f"{name}_region_subregion_usage.csv")
+        save_region_subregion_usage(df_raw, df_used, region_usage_path)
+
+        # === Guardar splits ===
+        y_pred_prob_full = np.full_like(y, np.nan, dtype=np.float32)
+        y_pred_prob_full[idx_test] = y_pred_prob
+        split_paths = export_splits_csv(
+            df_used, y, y_pred_prob_full,
+            idx_train, idx_val, idx_test,
+            base_out, variables
+        )
+        for k, p in split_paths.items():
+            print(f"[SAVE] Split CSV ({k}) -> {p}")
+
+        # === UNIFIED REPORT ===
+        generate_combined_report(
+            y_true=y_test,
+            y_pred_prob=y_pred_prob,
+            n_pigments=int(variables["num_files"]),
+            output_dir=os.path.join(base_out, "evaluation"),
+            name=name
+        )
+
+        # === Extra summaries ===
+        summarize_model(name, variables, X_train, y_train, model, base_out)
+        per_pigment_metrics(y_test, y_pred_prob, variables, base_out, name)
+        top_confusions(np.dot(y_test.T, y_pred_prob), [f"P{i+1}" for i in range(y_test.shape[1])], base_out, name)
+        plot_comparative_spectra(X_test, y_test, y_pred_prob, base_out, name, pigment_indices=[0, 5, 10])
+        write_conclusions({"global": rep.compute_metrics(y_test, (y_pred_prob > 0.5).astype(int), y_pred_prob)}, base_out, name)
+
+
+
+        # === MÉTRICAS DETALLADAS (usando report.compute_detailed_metrics) ===
+
+        # Calcula todas las métricas detalladas
+        detailed_results = rep.compute_detailed_metrics(
+            y_true=y_test,
+            y_pred_prob=y_pred_prob,
+            num_files=int(variables["num_files"]),
+            threshold=0.5,
+            verbose=True
+        )
+
+        # Save metrics CSV inside the 'datasets' folder
+        csv_out_dir = os.path.join(base_out, "datasets")
+        os.makedirs(csv_out_dir, exist_ok=True)
+        metrics_csv = os.path.join(csv_out_dir, f"{name}_metrics_summary.csv")
+
+        header = ["model_name", "scope", "metric_name", "value", "description"]
+        write_header = not os.path.exists(metrics_csv)
+
+        with open(metrics_csv, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(header)
+
+            for scope, result in detailed_results.items():
+                if result is None:
+                    continue
+
+                # Each result should be (metrics_dict, descriptions_dict)
+                metrics, descriptions = result if isinstance(result, tuple) else (result, {})
+
+                for key, value in metrics.items():
+                    writer.writerow([
+                        name,
+                        scope,
+                        key,
+                        round(value, 6),
+                        descriptions.get(key, "")
+                    ])
+
+        print(f"[SAVE] Detailed metrics report -> {metrics_csv}")
+
+        # === SUMMARY: compare coactivation matrices vs model metrics ===
+        cm_dict = {
+            "pigments": {
+                "matrix": cm_pig_soft,
+                "classes": classes_pig,
+                "desc": "Pigment coactivation"
+            },
+            "mixtures": {
+                "matrix": cm_mix_soft,
+                "classes": ["M1", "M2", "M3"],  
+                "desc": "Mixture coactivation"
+            },
+            "pure_mix": {
+                "matrix": cm_puremix_soft,
+                "classes": classes_puremix_soft,
+                "desc": "Pure vs Mixture coactivation"
+            },
+            "perPigMix": {
+                "matrix": cm_soft_perPigMix,
+                "classes": classes_soft,
+                "desc": "Per-pigment×mixture coactivation"
+            },
+        }
+
+        summary_csv = summarize_confusion_matrices(
+            cm_dict=cm_dict,
+            detailed_results=detailed_results,
+            name=name,
+            base_out=base_out
+        )
+
+        # === I. Model summary ===
+        summarize_model(name, variables, X_train, y_train, model, base_out)
+
+        # === III. Per-pigment and per-mixture metrics ===
+        per_pigment_metrics(y_test, y_pred_prob, variables, base_out, name)
+
+        # === IV. Top confusions (from Pigment × Mixture CM) ===
+        top_confusions(cm_soft_perPigMix, classes_soft, base_out, name, top_k=15)
+
+        # === QUALITATIVE VISUALIZATION ===
+        plot_comparative_spectra(
+            X_test=X_test,
+            y_test=y_test,
+            y_pred_prob=y_pred_prob,
+            base_out=base_out,
+            name=name,
+            pigment_indices=[0, 5, 10],  # pigments to visualize
+            avg_blocks=5,
+            threshold=0.5
+        )
+
+        # === VI. Conclusions ===
+        write_conclusions(detailed_results, base_out, name)
+
+if __name__ == "__main__":
+    main()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cuotas por región/subregión (por archivo)
@@ -569,6 +718,44 @@ def main():
     y_train, y_val, y_test = y[idx_train], y[idx_val], y[idx_test]
 
     print(f"[DATA] input_len={input_len} | X_train={X_train.shape} | X_val={X_val.shape} | X_test={X_test.shape}")
+
+    
+    # === Kubelka–Munk Synthetic Mixing & Unmixing ===
+    DO_KM_MIX = variables.get("do_km_mixing", True)
+    if DO_KM_MIX:
+        from km_utils import generate_synthetic_mixtures, apply_km_unmixing, reflectance_to_ks  # tu módulo o las funciones directas
+
+        print("\n[KM] Generando mezclas sintéticas (Kubelka–Munk)...")
+
+        # Usa tus pigmentos base (ej: espectros promedio de cada pigmento)
+        # Aquí asumimos que y_train tiene un one-hot por pigmento
+        pigment_means = []
+        for i in range(y_train.shape[1]):
+            if np.sum(y_train[:, i]) > 0:
+                pigment_means.append(np.mean(X_train[y_train[:, i] > 0], axis=0))
+        pigment_means = np.array(pigment_means)
+
+        # Generar mezclas sintéticas
+        mixtures, alphas_true, components = generate_synthetic_mixtures(
+            pigment_means, n_samples=12000, n_mix=(2, 3)
+        )
+
+        # Suponiendo que tienes k_set, s_set (derivados de pigment_means)
+        KS_pure = reflectance_to_ks(pigment_means)
+        k_set = KS_pure  # simplificación: usamos K/S como proxy
+        s_set = np.ones_like(KS_pure)  # o derivado de modelos más precisos
+
+        # Aplicar desmezcla
+        alphas_pred = apply_km_unmixing(mixtures, k_set, s_set)
+
+        # Evaluar error de desmezcla
+        def mse(a, b):
+            return np.mean((np.array(a) - np.array(b))**2)
+
+        errors = [mse(a, b) for a, b in zip(alphas_true, alphas_pred)]
+        print(f"[KM] Error medio de desmezcla (MSE): {np.mean(errors):.4f}")
+
+
 
     # 6️⃣ Entrenamiento
     model_names = [m.strip() for m in args.models.split(",") if m.strip()]

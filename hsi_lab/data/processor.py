@@ -53,16 +53,10 @@ class HSIDataProcessor:
 
     @staticmethod
     def _extract_first_int(s: str) -> int:
-        """Extrae el primer número entero que aparezca en s (o -1 si no hay)."""
         m = re.search(r"\d+", str(s))
         return int(m.group(0)) if m else -1
 
     def _balanced_quota_sample(self, df_grp: pd.DataFrame, total: int) -> pd.DataFrame:
-        """
-        Devuelve 'total' filas de df_grp (grupo por Región o Subregión),
-        balanceando por (Pigment Index × Mixture). Determinista con balance_seed.
-        Si total <= 0 o el grupo es más pequeño, devuelve el grupo sin tocar.
-        """
         if total <= 0 or len(df_grp) <= total:
             return df_grp
 
@@ -93,9 +87,6 @@ class HSIDataProcessor:
         return df_grp.loc[sel]
 
     def _balanced_quota_sample_by(self, df_grp: pd.DataFrame, total: int, by_cols) -> pd.DataFrame:
-        """
-        Versión general: balancea por columnas dadas (p.ej., ['Mixture'] o ['Mixture','Region']).
-        """
         if total <= 0 or len(df_grp) <= total:
             return df_grp
 
@@ -126,12 +117,6 @@ class HSIDataProcessor:
         return df_grp.loc[sel]
 
     def _equalize_r234_to_r1_by_pigment(self, df_in: pd.DataFrame) -> pd.DataFrame:
-        """
-        Para cada pigmento p, fuerza que (# filas en Regiones 2+3+4) == (# filas en Región 1).
-        Se hace por *downsampling* balanceado:
-          - Reg1: muestreo simple (solo hay una mezcla real en Reg1).
-          - Reg(2,3,4): balanceando por ['Mixture','Region'].
-        """
         if df_in.empty:
             return df_in
 

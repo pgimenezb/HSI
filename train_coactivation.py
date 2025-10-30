@@ -2,17 +2,16 @@ import os
 import argparse
 import importlib
 from typing import Tuple, Dict
-
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, accuracy_score
 import csv
-
-from hsi_lab.data.config import variables
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.eval import report_coactivation as rep
+from hsi_lab.eval import report_confusion as rep
 import matplotlib.pyplot as plt
+from hsi_lab.data.config import get_wavelength_axis, spectral_ticks, variables
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Trainer
@@ -133,7 +132,6 @@ def export_splits_csv(
     idx_test: np.ndarray,
     out_dir: str,
     vars_: dict,
-    threshold: float = 0.5,
 ) -> dict:
     os.makedirs(out_dir, exist_ok=True)
 
@@ -143,19 +141,29 @@ def export_splits_csv(
     if y_pred_prob is None:
         y_pred_prob = np.full((N, D), np.nan, dtype=np.float32)
 
-    # --- Decodificación soft ---
-    y_true_2N = decode_soft_pigment_and_group(y_true, n_p, threshold)
-    y_true_4N = decode_soft_pigment_and_mix4(y_true, n_p, threshold)
-    y_pred_2N = decode_soft_pigment_and_group(y_pred_prob, n_p, threshold)
-    y_pred_4N = decode_soft_pigment_and_mix4(y_pred_prob, n_p, threshold)
+    # --- Decode true labels ---
+    y_true_2N = decode_soft_pigment_and_group(y_true, n_p)
+    y_true_4N = decode_soft_pigment_and_mix4(y_true, n_p)
 
-    def split_pm(lbls: str):
-        if not lbls:
+    # --- Decode predictions safely (only for finite rows) ---
+    def safe_decode(decoder_fn, y_like):
+        out = np.array([""] * len(y_like), dtype=object)
+        valid = np.isfinite(y_like).all(axis=1)
+        if valid.any():
+            out[valid] = decoder_fn(y_like[valid], n_p)
+        return out
+
+    y_pred_2N = safe_decode(decode_soft_pigment_and_group, y_pred_prob)
+    y_pred_4N = safe_decode(decode_soft_pigment_and_mix4, y_pred_prob)
+
+    # --- Split pigment/mix ---
+    def split_pm(lbl_4n: str):
+        if not lbl_4n:
             return "", ""
-        # Solo tomamos el primero para columnas "pig_" (representativo)
-        first = lbls.split(";")[0]
-        px, m = first.split("_", 1)
-        return px, m
+        parts = lbl_4n.split("_", 1)
+        if len(parts) < 2:
+            return parts[0], ""
+        return parts[0], parts[1]
 
     pig_true, mix_true = zip(*[split_pm(s) for s in y_true_4N])
     pig_pred, mix_pred = zip(*[split_pm(s) for s in y_pred_4N])
@@ -188,6 +196,7 @@ def export_splits_csv(
     save_subset(idx_test, "test")
 
     return paths
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +308,7 @@ def parse_args():
     p.add_argument("--models", type=str, required=True)
     p.add_argument("--trials", type=int, default=None)
     p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--batch_size", type=int, default=None)
     return p.parse_args()
 
 
@@ -413,7 +423,18 @@ def plot_comparative_spectra(
     if X_test.ndim == 2:
         X_test = X_test[..., np.newaxis]  # (samples, bands, 1)
     n_samples, n_bands, _ = X_test.shape
-    wls = np.arange(n_bands)
+    bands = X_test.shape[1]
+    wavelength_axis = get_wavelength_axis(variables["data_type"])
+    wls = wavelength_axis[:bands]
+
+    plt.xticks(
+        [wls[i] for i in spectral_ticks["positions"]],
+        spectral_ticks["labels"],
+        rotation=90,
+        fontsize=8
+    )
+    plt.xlabel("Data type, channel and wavelength (nm)")
+
 
     n_p = y_test.shape[1] - 4  # assuming last 4 columns are mixtures
 
@@ -469,7 +490,7 @@ def plot_comparative_spectra(
         plt.legend()
         plt.tight_layout()
 
-        # 💾 Save plot
+        # Save plot
         out_path = os.path.join(spectra_dir, f"{name}_spectra_P{pigment_idx+1:02d}.png")
         plt.savefig(out_path, dpi=300)
         plt.close()
@@ -649,6 +670,7 @@ def main():
             input_len=input_len, num_classes=y.shape[1],
             trials=args.trials if args.trials is not None else variables.get("trials"),
             epochs=args.epochs if args.epochs is not None else variables.get("epochs"),
+            batch_size=args.batch_size if args.batch_size is not None else variables.get("batch_size"),
             n_jobs=variables.get("optuna_n_jobs", 1),
             seed=variables.get("seed", 42),
         )
@@ -675,11 +697,7 @@ def main():
         # === Guardar splits ===
         y_pred_prob_full = np.full_like(y, np.nan, dtype=np.float32)
         y_pred_prob_full[idx_test] = y_pred_prob
-        split_paths = export_splits_csv(
-            df_used, y, y_pred_prob_full,
-            idx_train, idx_val, idx_test,
-            datasets_dir, variables
-        )
+        split_paths = export_splits_csv(df_used, y, y_pred_prob, idx_train, idx_val, idx_test, base_out, variables)
         for k, p in split_paths.items():
             print(f"[SAVE] Split CSV ({k}) -> {p}")
 
@@ -829,7 +847,6 @@ def main():
             name=name,
             base_out=base_out
         )
-
 
         # === I. Model summary ===
         summarize_model(name, variables, X_train, y_train, model, base_out)

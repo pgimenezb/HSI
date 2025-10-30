@@ -1,79 +1,80 @@
+import numpy as np
+
+# ============================================================
+# === GLOBAL CONFIGURATION VARIABLES ===
+# ============================================================
+
 variables = {
     "data_folder": "/home/pgimenez/projects/HSI/database",
     "excel_file": "/home/pgimenez/projects/HSI/database/noms_fichiers.csv",
 
     "data_type": ["vis", "swir"],
     "start_index": 0,
-    # nº de pigmentos (bits delante de Multi)
     "num_files": 21,
 
-    # sin filtros por defecto
     "selected_regions": [],
     "selected_subregions": [],
 
     "savgol_window": 0,
     "savgol_polyorder": 0,
-    "num_regions": 1,  # puedes dejarlo así si no lo usas en lógica
+    "num_regions": 1,
 
-    # --- SOLO MIXTURE ---
     "num_mixture": {
         "Pure": 1,
         "Pigment + White titanium (80:20)": 2,
         "Pigment + White titanium (50:50)": 3,
-        "Pigment + White titanium (20:80)": 4
+        "Pigment + White titanium (20:80)": 4,
     },
 
-    # Si no usas estos índices en ningún sitio, puedes borrarlo;
-    # si los usas como metadatos, mantenlos tal cual.
     "mixture_columns": {
         22: "Pure",
         23: "Pigment + White titanium (80:20)",
         24: "Pigment + White titanium (50:50)",
-        25: "Pigment + White titanium (20:80)"
+        25: "Pigment + White titanium (20:80)",
     },
 
-    # Map solo de mixture (bits → nombre)
     "mixture_mapping": {
         "1000": "Pure",
         "0100": "Pigment + White titanium (80:20)",
         "0010": "Pigment + White titanium (50:50)",
-        "0001": "Pigment + White titanium (20:80)"
+        "0001": "Pigment + White titanium (20:80)",
     },
 
-    # Etiquetas “meta” solo con mixture
     "meta_label_map": {
         1: ("Pure", "1000"),
         2: ("Pigment + White titanium (80:20)", "0100"),
         3: ("Pigment + White titanium (50:50)", "0010"),
-        4: ("Pigment + White titanium (20:80)", "0001")
+        4: ("Pigment + White titanium (20:80)", "0001"),
     },
-
-    # Eliminados: binder_mapping, binder_columns, num_binder, selected_binders
-    # "binder_mapping": {},
-    # "binder_columns": {},
-    # "num_binder": {},
-    # "selected_binders": [],
 
     "smoothing_method": "Without filter",
     "ai_architecture": "CNN",
-    "target_mode": "pigments+mixture",  # ← antes decía pigments+binders
-
+    "target_mode": "pigments+mixture",
     "model": "Model 1",
     "seed": 42,
 
     "outputs_dir": "outputs",
-    "models_dir":  "outputs",
-    "model_list": ["cnn_baseline","cnn_dilated","cnn_residual", "dnn_baseline","dnn_selu","dnn_wide", "DNN"],
+    "models_dir": "outputs",
+    "model_list": [
+        "cnn_baseline", "cnn_dilated", "cnn_residual",
+        "dnn_baseline", "dnn_selu", "dnn_wide", "DNN"
+    ],
 
     "trials": 50,
     "epochs": 50,
-
-    "optuna_n_jobs": 1,   # Si usas SQLite (optuna.db), mejor 1 para evitar bloqueos
+    "optuna_n_jobs": 1,
     "n_jobs_models": 1,
-
-    "region_row_quota": {1:300, 2:100, 3:100, 4:100},  # o {}
-    "subregion_row_quota": {},                          # si lo usas, tiene prioridad
+    "batch_size": 32,
+    "region_row_quota": {1: 300, 2: 100, 3: 100, 4: 100},
+    "subregion_row_quota": {},
     "balance_seed": 42,
-    "test_per_mixture": 2,          # cuántas filas por (Pigment, Mixture) en test
-    "balance_test_by_mixture": True # activa el test balanceado por mezcla
-    }
+    "test_per_mixture": 2,
+    "balance_test_by_mixture": True,
+
+
+     # Kubelka–Munk configuration
+    "do_km_mixing": True,        # Enable or disable synthetic KM stage
+    "km_n_samples": 2000,        # Number of synthetic mixtures to generate
+    "km_n_mix": (2, 3),          # Range of components per mixture (binary/ternary)
+    "km_method": "lstsq"         # "minimize" for fast unmixing or "lstsq" for fast unmixing
+}
