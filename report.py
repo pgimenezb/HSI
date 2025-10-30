@@ -13,12 +13,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.cm as mpl_cm
 import matplotlib.cm as cm
+from sklearn.metrics import confusion_matrix 
+from scipy.optimize import lsq_linear
+
 from matplotlib.colors import ListedColormap
 from scipy.interpolate import interp1d
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
-    confusion_matrix as sk_confusion_matrix,
+    confusion_matrix,
     accuracy_score, f1_score, precision_score, recall_score,
     roc_auc_score, hamming_loss, log_loss, average_precision_score
 )
@@ -45,152 +48,6 @@ def import_model_trainer(name: str):
         f"Last error: {last_err}"
     )
 
-
-# ============================================================
-# Kubelka–Munk 
-# ============================================================
-
-def reflectance_to_ks(R):
-    R = np.clip(R, 1e-3, 1.0)
-    return ((1 - R) ** 2) / (2 * R)
-
-
-def ks_to_reflectance(KS):
-    return 1 + KS - np.sqrt(KS ** 2 + 2 * KS)
-
-
-def km_unmix(KS_mix, k_set, s_set):
-    n = k_set.shape[0]
-
-    def loss_fn(alphas):
-        K_mix_est = np.dot(alphas, k_set)
-        S_mix_est = np.dot(alphas, s_set)
-        KS_est = K_mix_est / S_mix_est
-        return np.mean((KS_est - KS_mix) ** 2)
-
-    constraints = [{'type': 'eq', 'fun': lambda a: np.sum(a) - 1}]
-    bounds = [(0, 1)] * n
-    x0 = np.full(n, 1 / n)
-    result = minimize(loss_fn, x0, bounds=bounds, constraints=constraints)
-    return result.x if result.success else np.zeros(n)
-
-
-def apply_km_unmixing(R_all, k_set, s_set):
-    KS_all = reflectance_to_ks(R_all)
-    alphas = []
-    for i, KS in enumerate(KS_all):
-        alpha = km_unmix(KS, k_set, s_set)
-        alphas.append(alpha)
-        if (i + 1) % 500 == 0:
-            print(f"[KM] {i + 1} processed samples")
-    return np.array(alphas)
-
-
-def fast_km_unmixing(mixtures, k_set, s_set):
-    n_pigments, n_wl = k_set.shape
-    KS_mix = mixtures.T  # (n_wl, n_samples)
-
-    # Solve for all mixtures at once using least-squares
-    alphas_pred, _, _, _ = np.linalg.lstsq(k_set.T, KS_mix, rcond=None)
-    alphas_pred = alphas_pred.T  # (n_samples, n_pigments)
-
-    # Ensure positivity and normalization
-    alphas_pred = np.clip(alphas_pred, 0, 1)
-    alphas_pred /= np.maximum(np.sum(alphas_pred, axis=1, keepdims=True), 1e-8)
-
-    return alphas_pred
-
-
-
-def match_spectral_resolution(spectra, target_bands=267, data_type=None):
-    from hsi_lab.data.config import variables
-    if data_type is None:
-        data_type = variables.get("data_type", ["vis"])
-    if isinstance(data_type, str):
-        data_type = [data_type.lower()]
-
-    n_bands = spectra.shape[-1]
-
-    # Caso 1: igual tamaño
-    if n_bands == target_bands:
-        return spectra
-
-    # Caso 2: degenerado (1 sola banda)
-    if n_bands == 1:
-        return np.repeat(spectra, target_bands, axis=-1)
-
-    # === Interpolación por región ===
-    if data_type == ["vis"]:
-        start_nm, end_nm = 400, 1000
-        old_axis = np.linspace(start_nm, end_nm, n_bands)
-        new_axis = np.linspace(start_nm, end_nm, target_bands)
-        f = interp1d(old_axis, spectra, axis=-1, kind="linear", fill_value="extrapolate")
-        return f(new_axis)
-
-    elif data_type == ["swir"]:
-        start_nm, end_nm = 1000, 2500
-        old_axis = np.linspace(start_nm, end_nm, n_bands)
-        new_axis = np.linspace(start_nm, end_nm, target_bands)
-        f = interp1d(old_axis, spectra, axis=-1, kind="linear", fill_value="extrapolate")
-        return f(new_axis)
-
-    elif set(data_type) == {"vis", "swir"}:
-        # ⚠️ Combinar respetando longitud real de cada bloque
-        vis_n = n_bands // 2
-        swir_n = n_bands - vis_n
-
-        vis_old = np.linspace(400, 1000, vis_n)
-        swir_old = np.linspace(1000, 2500, swir_n)
-
-        vis_new = np.linspace(400, 1000, target_bands)
-        swir_new = np.linspace(1000, 2500, target_bands)
-
-        f_vis = interp1d(vis_old, spectra[..., :vis_n], axis=-1, kind="linear", fill_value="extrapolate")
-        f_swir = interp1d(swir_old, spectra[..., vis_n:], axis=-1, kind="linear", fill_value="extrapolate")
-
-        vis_interp = f_vis(vis_new)
-        swir_interp = f_swir(swir_new)
-
-        # Concatenar con una pequeña separación NaN si quieres un gap visible
-        return np.concatenate([vis_interp, swir_interp], axis=-1)
-
-    else:
-        raise ValueError(f"Unsupported data_type: {data_type}")
-
-
-
-
-def generate_synthetic_mixtures(R_pigments, n_samples=12000, n_mix=(2, 3)):
-    n_pigments, n_wl = R_pigments.shape
-    KS_pigments = reflectance_to_ks(R_pigments)
-
-    mixtures, proportions, components = [], [], []
-
-    for _ in range(n_samples):
-        n = np.random.choice(n_mix)
-        idx = np.random.choice(n_pigments, n, replace=False)
-
-        # Mezclas fijas o aleatorias
-        if n == 2 and np.random.rand() < 0.5:
-            alpha = np.array([0.2, 0.8])
-            np.random.shuffle(alpha)
-        elif n == 3 and np.random.rand() < 0.5:
-            base = np.array([0.78, 0.12, 0.10])
-            alpha = base / base.sum()
-            np.random.shuffle(alpha)
-        else:
-            a = np.random.rand(n)
-            alpha = a / a.sum()
-
-        # Mezcla lineal en el dominio K/S
-        KS_mix = np.dot(alpha, KS_pigments[idx])
-        R_mix = ks_to_reflectance(KS_mix)
-
-        mixtures.append(R_mix)
-        proportions.append(alpha)
-        components.append(idx)
-
-    return np.array(mixtures), proportions, components
 
 
 # ============================================================================ #
@@ -492,16 +349,8 @@ def top_confusions(cm, classes, base_out, name, top_k=15):
 # === SPECTRAL CONFIGURATION (FIXED & ROBUST) ===
 # ============================================================
 
-import numpy as np
 
 def get_wavelengths_and_labels(total_bands, data_type=["vis"], vis_start=400, vis_end_nominal=1000, swir_start=1000, swir_end_nominal=2500):
-    """
-    Genera ejes de longitudes de onda (wavelengths) VIS y/o SWIR ajustados al número real de bandas.
-    - Si solo hay VIS, escala automáticamente hasta el rango real.
-    - Si hay VIS+SWIR, divide proporcionalmente según las bandas reales.
-    - Incluye etiquetas (ticks) adaptadas al rango.
-    """
-
     wavelengths = []
     tick_positions = []
     tick_labels = []
@@ -555,84 +404,489 @@ def get_wavelengths_and_labels(total_bands, data_type=["vis"], vis_start=400, vi
 
 
 
-
 # ============================================================================ #
 # QUALITATIVE VISUALIZATION: Spectra comparison
 # ============================================================================ #
-def plot_comparative_spectra(X_test, y_test, y_pred_prob, base_out, name,
-                             pigment_indices=None, avg_blocks=5, threshold=0.5):
+def plot_comparative_spectra(df, base_out, name, per_file=True, num_blocks=6):
 
-    spectra_dir = os.path.join(base_out, "Spectra")
-    os.makedirs(spectra_dir, exist_ok=True)
+    os.makedirs(base_out, exist_ok=True)
 
-    # Ensure shape consistency
-    X_test = np.array(X_test)
-    if X_test.ndim == 2:
-        X_test = X_test[..., np.newaxis]
-    n_samples, n_bands, _ = X_test.shape
+    # === Detectar columnas espectrales ===
+    vis_cols = [c for c in df.columns if c.lower().startswith("vis_")]
+    swir_cols = [c for c in df.columns if c.lower().startswith("swir_")]
+    all_cols = vis_cols + swir_cols
 
-    # Load wavelength configuration
-    wavelengths, wavelength_axis, spectral_ticks = get_wavelength_config(variables["data_type"])
+    print(f"[DEBUG] Found {len(vis_cols)} VIS cols and {len(swir_cols)} SWIR cols.")
 
-    if len(wavelength_axis) != n_bands:
-        print(f"[WARN] Mismatch between wavelength axis ({len(wavelength_axis)}) and data bands ({n_bands}). Adjusting...")
-        if len(wavelength_axis) > n_bands:
-            wls = wavelength_axis[:n_bands]
-        else:
-            wls = np.linspace(wavelength_axis[0], wavelength_axis[-1], n_bands)
+    if not all_cols:
+        print("[WARN] No VIS/SWIR spectral columns found.")
+        return
+
+    spectra_array_all = df[all_cols].to_numpy(dtype=float)
+
+    # === Eje de longitudes de onda coherente con KM ===
+    wls, xticks_pos, xticks_labels = get_wavelengths_and_labels(
+        total_bands=spectra_array_all.shape[1],
+        data_type=["vis", "swir"] if vis_cols and swir_cols else ["vis"]
+    )
+
+    # === Modo por archivo ===
+    if per_file:
+        for file in df["File"].unique():
+            df_file = df[df["File"] == file]
+            spectra_array = df_file[all_cols].to_numpy(dtype=float)
+
+            if len(spectra_array) < num_blocks:
+                print(f"[WARN] {file}: insufficient rows to divide into {num_blocks} blocks.")
+                continue
+
+            block_size = len(spectra_array) // num_blocks
+            fig, ax = plt.subplots(figsize=(12, 5))
+
+            for i in range(num_blocks):
+                start = i * block_size
+                end = (i + 1) * block_size if i < num_blocks - 1 else len(spectra_array)
+                block = spectra_array[start:end]
+
+                mean_spec = np.mean(block, axis=0)
+                min_spec = np.min(block, axis=0)
+                max_spec = np.max(block, axis=0)
+
+                ax.plot(wls, mean_spec, lw=1.8, label=f"Spectre {i+1}")
+                ax.fill_between(wls, min_spec, max_spec, alpha=0.2)
+
+            ax.set_title(f"{file}")
+            ax.set_xlabel("Wavelength (nm)")
+            ax.set_ylabel("Reflectance")
+
+            # ✅ FIX: usar directamente xticks_pos (no índices)
+            ax.set_xticks(xticks_pos)
+            xticklabels = ax.set_xticklabels(xticks_labels, rotation=65, fontsize=8)
+
+            # Ajuste del espacio inferior según etiquetas
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+            max_height = max([label.get_window_extent(renderer).height for label in xticklabels])
+            fig_height = fig.get_size_inches()[1] * fig.dpi
+            bottom_space = max_height / fig_height + 0.05
+            fig.subplots_adjust(bottom=bottom_space)
+
+            # Leyenda y layout
+            fig.legend(loc="lower center", bbox_to_anchor=(0.5, -0.05), ncol=3)
+            fig.tight_layout(rect=[0, 0.1, 1, 1])
+
+            # Guardar figura
+            out_path = os.path.join(base_out, f"{name}_{file}_blocks.png")
+            plt.savefig(out_path, dpi=300)
+            plt.close()
+            print(f"[SAVE] {out_path}")
+
+    # === Modo global (todas las muestras por archivo) ===
     else:
-        wls = wavelength_axis
+        fig, ax = plt.subplots(figsize=(12, 5))
 
-    n_pigments = y_test.shape[1] - 4  # assumes last 4 cols are mixtures
-    if pigment_indices is None:
-        pigment_indices = range(min(3, n_pigments))
+        for file in df["File"].unique():
+            df_file = df[df["File"] == file]
+            spectra_array = df_file[all_cols].to_numpy(dtype=float)
+            if len(spectra_array) == 0:
+                continue
 
-    # Loop through pigments to visualize spectra
-    for pigment_idx in pigment_indices:
-        true_mask = y_test[:, pigment_idx] > threshold
-        pred_mask = y_pred_prob[:, pigment_idx] > threshold
+            mean_spec = np.mean(spectra_array, axis=0)
+            min_spec = np.min(spectra_array, axis=0)
+            max_spec = np.max(spectra_array, axis=0)
 
-        if not np.any(true_mask):
-            print(f"[WARN] Pigment P{pigment_idx+1:02d} has no true samples.")
-            continue
+            ax.plot(wls, mean_spec, lw=1.8, label=f"{file} (n={len(spectra_array)})")
+            ax.fill_between(wls, min_spec, max_spec, alpha=0.2)
 
-        spectra_true = X_test[true_mask, :, 0]
-        spectra_pred = X_test[pred_mask, :, 0]
+        ax.set_xlabel("Data type and wavelength (nm)")
+        ax.set_ylabel("Reflectance")
+        ax.set_title("Average spectra per file (with min–max ranges)")
 
-        # Compute min/max bands for fill
-        min_t, max_t = spectra_true.min(axis=0), spectra_true.max(axis=0)
-        min_p, max_p = (spectra_pred.min(axis=0), spectra_pred.max(axis=0)) if len(spectra_pred) > 0 else (None, None)
+        # ✅ FIX: usar directamente xticks_pos (no índices)
+        ax.set_xticks(xticks_pos)
+        xticklabels = ax.set_xticklabels(xticks_labels, rotation=65, fontsize=8)
 
-        plt.figure(figsize=(10, 6))
-        plt.fill_between(wls, min_t, max_t, alpha=0.15, color="blue", label="True range")
-        if min_p is not None:
-            plt.fill_between(wls, min_p, max_p, alpha=0.15, color="orange", label="Pred range")
-        plt.plot(wls, np.mean(spectra_true, axis=0), color="blue", linewidth=2, label="True avg")
-        if len(spectra_pred) > 0:
-            plt.plot(wls, np.mean(spectra_pred, axis=0), color="orange", linewidth=2, label="Pred avg")
+        # Ajuste espacio inferior
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        max_height = max([label.get_window_extent(renderer).height for label in xticklabels])
+        fig_height = fig.get_size_inches()[1] * fig.dpi
+        bottom_space = max_height / fig_height + 0.05
+        fig.subplots_adjust(bottom=bottom_space)
 
-        # === Axis formatting: consistent VIS/SWIR + channel + wavelength ===
-        plt.title(f"Pigment P{pigment_idx+1:02d} — Average spectra")
-        plt.xlabel("Data type, channel and wavelength (nm)")
-        plt.ylabel("Reflectance")
-        plt.legend(loc="upper right", fontsize=8)
-
-        # Use unified spectral tick style
-        tick_positions, tick_labels = spectral_ticks_labels(wls, n_ticks_vis=10, n_ticks_swir=10)
-        plt.xticks(tick_positions, tick_labels, rotation=65, ha="right", fontsize=8)
-
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -bottom_space / 2), ncol=3)
         plt.tight_layout()
 
+        out_path = os.path.join(base_out, f"{name}_global.png")
+        plt.savefig(out_path, dpi=300)
+        plt.close()
+        print(f"[SAVE] {out_path}")
 
-        print(f"[SAVE] Spectra plot -> {out_path}")
 
-        print("[DEBUG] X_test sample shape:", X_test[0, :, 0].shape)
-        print("[DEBUG] First 10 reflectance values:", X_test[0, :10, 0])
-        print("[DEBUG] Wavelength axis (first 10):", wls[:10])
+
+# ============================================================
+# Kubelka–Munk 
+# ============================================================
+# ============================================================
+# Kubelka–Munk Improved Physical Mixing & Unmixing (Stable + Fast)
+# ============================================================
+
+import numpy as np
+from scipy.optimize import lsq_linear  # <- CORRECT import
+from scipy.optimize import nnls  # (opcional si usas otras variantes)
+
+# === Conversiones básicas ===
+def reflectance_to_ks(R):
+    """Reflectancia → K/S"""
+    R = np.clip(R, 1e-3, 1.0)
+    return ((1 - R) ** 2) / (2 * R)
+
+
+def ks_to_reflectance(KS):
+    """K/S → Reflectancia"""
+    KS = np.maximum(KS, 1e-8)
+    R = 1 + KS - np.sqrt(KS ** 2 + 2 * KS)
+    return np.clip(R, 0, 1)
+
+
+# === Estimación de K y S por pigmento ===
+def estimate_k_s_per_pigment(R_pigments):
+    """
+    Calcula K_i y S_i individuales por pigmento a partir de sus reflectancias puras.
+    Evita suponer S=1 para todos los pigmentos.
+    """
+    R_pigments = np.array(R_pigments)
+    if R_pigments.ndim > 2:
+        R_pigments = R_pigments.reshape(R_pigments.shape[0], -1)
+
+    R = np.clip(R_pigments, 1e-3, 1)
+    KS = ((1 - R)**2) / (2 * R)
+
+    # Estimar S como una forma relativa al brillo medio (no constante)
+    S = np.ones_like(KS)
+    for i in range(KS.shape[0]):
+        s_i = np.median(KS[i] / np.max(KS[i]))
+        S[i, :] = np.clip(s_i, 1e-3, 1.0)
+    K = KS * S
+    return K, S
+
+
+# === Unmixing con NNLS o LSQ ===
+def km_unmix_nnls(KS_mix, k_set, s_set, top_k=None, min_alpha=0.05):
+    """
+    Desmezcla un espectro usando Kubelka–Munk + bounded least squares (no negativo).
+    """
+    n_pigments = k_set.shape[0]
+
+    # Construir librería de K/S por pigmento
+    KS_library = k_set / np.maximum(s_set, 1e-8)
+
+    # Resolver: min ||A x - b||² con 0 <= x <= 1
+    res = lsq_linear(KS_library.T, KS_mix, bounds=(0, 1), lsmr_tol='auto', max_iter=300)
+    alpha_pred = np.clip(res.x, 0, None)
+
+    # Normalizar
+    if np.sum(alpha_pred) > 0:
+        alpha_pred /= np.sum(alpha_pred)
+
+    # Sparsidad opcional: mantener solo top_k pigmentos dominantes
+    if top_k is not None and top_k < len(alpha_pred):
+        idx = np.argsort(-alpha_pred)[:top_k]
+        mask = np.zeros_like(alpha_pred)
+        mask[idx] = alpha_pred[idx]
+        alpha_pred = mask / np.maximum(np.sum(mask), 1e-8)
+
+    # Eliminar contribuciones pequeñas
+    alpha_pred[alpha_pred < min_alpha] = 0
+    if np.sum(alpha_pred) > 0:
+        alpha_pred /= np.sum(alpha_pred)
+
+    return alpha_pred
+
+
+def apply_km_unmixing_nnls(R_all, k_set, s_set, top_k=None, top_n_sim=6):
+    KS_all = reflectance_to_ks(R_all)
+    alphas = []
+
+    # === función auxiliar local
+    def select_similar_pigments(KS_mix, k_set, s_set, top_n=6):
+        KS_library = k_set / np.maximum(s_set, 1e-8)
+        corr = np.dot(KS_library, KS_mix) / (
+            np.linalg.norm(KS_library, axis=1) * np.linalg.norm(KS_mix)
+        )
+        idx_sel = np.argsort(-corr)[:top_n]
+        return idx_sel
+
+    for i, KS in enumerate(KS_all):
+        # 1️⃣ seleccionar pigmentos similares al espectro actual
+        idx_sel = select_similar_pigments(KS, k_set, s_set, top_n=top_n_sim)
+
+        # 2️⃣ hacer unmixing solo con esos pigmentos candidatos
+        alpha = km_unmix_nnls(KS, k_set[idx_sel], s_set[idx_sel], top_k=top_k)
+
+        # 3️⃣ reconstruir vector completo con ceros para los demás pigmentos
+        alpha_full = np.zeros(k_set.shape[0])
+        alpha_full[idx_sel] = alpha
+        alphas.append(alpha_full)
+
+        if (i + 1) % 500 == 0:
+            print(f"[KM] {i + 1} processed samples (NNLS + spectral filtering)")
+
+    return np.array(alphas)
+
+
+# === Generador de mezclas sintéticas ===
+def generate_synthetic_mixtures(R_pigments, n_samples=12000, n_mix=(2, 3)):
+    """
+    Genera mezclas sintéticas según el modelo Kubelka–Munk,
+    combinando pigmentos en el dominio K/S.
+    """
+    R_pigments = np.array(R_pigments)
+    if R_pigments.ndim > 2:
+        R_pigments = R_pigments.reshape(R_pigments.shape[0], -1)
+
+    n_pigments, n_wl = R_pigments.shape
+    KS_pigments = reflectance_to_ks(R_pigments)
+
+    mixtures, proportions, components = [], [], []
+
+    for _ in range(n_samples):
+        n = np.random.choice(n_mix)
+        idx = np.random.choice(n_pigments, n, replace=False)
+
+        # Proporciones aleatorias (mezclas controladas)
+        if n == 2 and np.random.rand() < 0.5:
+            alpha = np.array([0.2, 0.8])
+            np.random.shuffle(alpha)
+        elif n == 3 and np.random.rand() < 0.5:
+            base = np.array([0.78, 0.12, 0.10])
+            alpha = base / base.sum()
+            np.random.shuffle(alpha)
+        else:
+            a = np.random.rand(n)
+            alpha = a / np.sum(a)
+
+        # Mezcla lineal en el dominio K/S
+        KS_mix = np.dot(alpha, KS_pigments[idx])
+        R_mix = ks_to_reflectance(KS_mix)
+
+        mixtures.append(R_mix)
+        proportions.append(alpha)
+        components.append(idx)
+
+    return np.array(mixtures), proportions, components
 
 # ============================================================================ #
+# LABEL DECODERS
+# ============================================================================ #
+def decode_pigment_and_group(y_like: np.ndarray, n_p: int, threshold=0.5):
+    y_pig = y_like[:, :n_p]
+    y_mix = y_like[:, n_p:n_p + 4]
+    results = []
+    for i in range(len(y_like)):
+        active_pigs = np.where(y_pig[i] > threshold)[0]
+        active_mix = np.where(y_mix[i] > threshold)[0]
+        labels = []
+        for p in active_pigs:
+            if 0 in active_mix:
+                labels.append(f"P{p + 1:02d}_Pure")
+            if any(m > 0 for m in active_mix):
+                labels.append(f"P{p + 1:02d}_Mixture")
+        results.append(";".join(labels) if labels else "")
+    return np.array(results, dtype=object)
+
+
+def decode_pigment_and_mix4(y_like: np.ndarray, n_p: int, threshold=0.5):
+    y_pig = y_like[:, :n_p]
+    y_mix = y_like[:, n_p:n_p + 4]
+    mix_names = ["Pure", "M1", "M2", "M3"]
+    results = []
+    for i in range(len(y_like)):
+        active_pigs = np.where(y_pig[i] > threshold)[0]
+        active_mix = np.where(y_mix[i] > threshold)[0]
+        labels = [f"P{p + 1:02d}_{mix_names[m]}" for p in active_pigs for m in active_mix]
+        results.append(";".join(labels) if labels else "")
+    return np.array(results, dtype=object)
+
+
+# ============================================================================ #
+# CONFUSION AND COACTIVATION MATRIX
+# ============================================================================ #
+def plot_confusion_matrix(cm, classes, title, save_path, annotate_percent=True):
+    """Plots confusion or coactivation matrices with consistent styling."""
+    n = len(classes)
+    fig_size = max(6, min(0.45 * n, 20))
+    plt.figure(figsize=(fig_size, fig_size))
+    ax = plt.gca()
+
+    base_cmap = mpl_cm.get_cmap("Blues", 256)
+    cmap_array = base_cmap(np.linspace(0, 1, 256))
+    cmap_array[0, :] = [1, 1, 1, 1]
+    cmap = ListedColormap(cmap_array)
+
+    vmax = np.max(cm) if np.max(cm) > 0 else 1.0
+    im = ax.imshow(cm, interpolation="nearest", cmap=cmap, vmin=0, vmax=vmax)
+
+    ax.set_xticks(np.arange(len(classes)))
+    ax.set_yticks(np.arange(len(classes)))
+    ax.set_xticklabels(classes, rotation=60, ha="right", fontsize=9)
+    ax.set_yticklabels(classes, fontsize=9)
+    ax.set_xlabel("Predicted", fontsize=11)
+    ax.set_ylabel("True", fontsize=11)
+    ax.set_title(title, fontsize=13, pad=10)
+
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            value = cm[i, j] * 100 if annotate_percent else cm[i, j]
+            if value < 0.005:
+                continue
+            ax.text(j, i, f"{value:.2f}", ha="center", va="center", color="black", fontsize=8)
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="4%", pad=0.2)
+    plt.colorbar(im, cax=cax, format="%.2f")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+    print(f"[SAVE] Matrix -> {save_path}")
+
+
+def confusion_from_labels(y_true_labels, y_pred_labels, classes=None):
+    """Builds a normalized confusion matrix from label strings."""
+    y_true_labels = np.asarray(y_true_labels, dtype=object)
+    y_pred_labels = np.asarray(y_pred_labels, dtype=object)
+    if classes is None:
+        seen = []
+        for x in list(y_true_labels) + list(y_pred_labels):
+            if x not in seen:
+                seen.append(x)
+        classes = list(seen)
+
+    idx = {c: i for i, c in enumerate(classes)}
+    valid_true = np.array([lbl in idx for lbl in y_true_labels])
+    valid_pred = np.array([lbl in idx for lbl in y_pred_labels])
+    mask = valid_true & valid_pred
+    ti = np.array([idx[lbl] for lbl in y_true_labels[mask]], dtype=int)
+    pi = np.array([idx[lbl] for lbl in y_pred_labels[mask]], dtype=int)
+    cm = confusion_matrix(ti, pi, labels=range(len(classes)))
+    row_sums = cm.sum(axis=1, keepdims=True).astype(float)
+    row_sums[row_sums == 0.0] = 1.0
+    return cm.astype(float) / row_sums, classes
+
+
+
+def soft_confusion_matrix(y_true, y_pred, class_names, normalize="row"):
+    """Calcula matriz de coactivación (soft confusion)."""
+    n = len(class_names)
+    cm = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(n):
+            cm[i, j] = np.mean(y_true[:, i] * y_pred[:, j])
+    if normalize == "row":
+        cm /= np.sum(cm, axis=1, keepdims=True) + 1e-12
+    elif normalize == "col":
+        cm /= np.sum(cm, axis=0, keepdims=True) + 1e-12
+    return cm
+
+
+def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"[INFO] Generating combined report in {output_dir}")
+
+    # Separar subconjuntos
+    y_true_pig = y_true[:, :n_pigments]
+    y_true_mix = y_true[:, n_pigments:n_pigments + 4]
+    y_pred_pig = y_pred_prob[:, :n_pigments]
+    y_pred_mix = y_pred_prob[:, n_pigments:n_pigments + 4]
+
+    # Nombres de clases
+    mix_classes = ["M1", "M2", "M3"]
+    pigment_classes = [f"P{i+1:02d}" for i in range(n_pigments)]
+    puremix_classes = [f"P{i+1:02d}_Pure" for i in range(n_pigments)] + \
+                      [f"P{i+1:02d}_Mixture" for i in range(n_pigments)]
+
+
+    # 🟦 COACTIVATION MATRICES
+
+    # 1️⃣ Mixtures (solo M1–M3)
+    y_true_mix3 = y_true_mix[:, 1:]
+    y_pred_mix3 = y_pred_mix[:, 1:]
+    cm_mix_soft = soft_confusion_matrix(y_true_mix3, y_pred_mix3, mix_classes)
+    plot_confusion_matrix(cm_mix_soft, mix_classes,
+                          "Mixtures (Coactivation)",
+                          os.path.join(output_dir, f"{name}_MIXTURES_Coactivation.png"))
+
+    # 2️⃣ Pigments (combinar Pure+M1+M2+M3 como un pigmento)
+    y_true_pig_unified = (y_true_pig * np.sum(y_true_mix, axis=1, keepdims=True)).astype(float)
+    y_pred_pig_unified = (y_pred_pig * np.sum(y_pred_mix, axis=1, keepdims=True)).astype(float)
+    cm_pig_soft = soft_confusion_matrix(y_true_pig_unified, y_pred_pig_unified, pigment_classes)
+    plot_confusion_matrix(cm_pig_soft, pigment_classes,
+                          "Pigments (Coactivation)",
+                          os.path.join(output_dir, f"{name}_PIGMENTS_Coactivation.png"))
+
+    # 3️⃣ Pure vs Mixture por pigmento
+    y_true_puremix = []
+    y_pred_puremix = []
+    for i in range(n_pigments):
+        true_pure = y_true_pig[:, [i]] * y_true_mix[:, [0]]
+        true_mix = y_true_pig[:, [i]] * np.sum(y_true_mix[:, 1:], axis=1, keepdims=True)
+        pred_pure = y_pred_pig[:, [i]] * y_pred_mix[:, [0]]
+        pred_mix = y_pred_pig[:, [i]] * np.sum(y_pred_mix[:, 1:], axis=1, keepdims=True)
+        y_true_puremix.append(np.concatenate([true_pure, true_mix], axis=1))
+        y_pred_puremix.append(np.concatenate([pred_pure, pred_mix], axis=1))
+    y_true_puremix = np.concatenate(y_true_puremix, axis=1)
+    y_pred_puremix = np.concatenate(y_pred_puremix, axis=1)
+
+    cm_puremix_soft = soft_confusion_matrix(y_true_puremix, y_pred_puremix, puremix_classes)
+    plot_confusion_matrix(cm_puremix_soft, puremix_classes,
+                          "Pure vs Mixture (Coactivation)",
+                          os.path.join(output_dir, f"{name}_PUREMIX_Coactivation.png"))
+
+
+    # 🟥 CONFUSION MATRICES (hard)
+
+    def hard_confusion(y_true_bin, y_pred_prob, classes, title, fname):
+        y_true_idx = np.argmax(y_true_bin, axis=1)
+        y_pred_idx = np.argmax(y_pred_prob, axis=1)
+        cm = confusion_matrix(y_true_idx, y_pred_idx, normalize="true")
+        plot_confusion_matrix(cm, classes, title, os.path.join(output_dir, fname))
+        return cm
+
+    cm_mix_conf = hard_confusion(y_true_mix3, y_pred_mix3, mix_classes,
+                                 "Mixtures (Confusion)", f"{name}_MIXTURES_Confusion.png")
+    cm_pig_conf = hard_confusion(y_true_pig_unified, y_pred_pig_unified, pigment_classes,
+                                 "Pigments (Confusion)", f"{name}_PIGMENTS_Confusion.png")
+    cm_puremix_conf = hard_confusion(y_true_puremix, y_pred_puremix, puremix_classes,
+                                     "Pure vs Mixture (Confusion)", f"{name}_PUREMIX_Confusion.png")
+
+    # 📊 MÉTRICAS GLOBALES (CSV)
+
+    detailed = compute_detailed_metrics(y_true, y_pred_prob, num_files=n_pigments, threshold=0.5, verbose=False)
+    metrics, desc = detailed["global"]
+
+    csv_path = os.path.join(output_dir, f"{name}_combined_report.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Metric", "Value", "Description"])
+        for k, v in metrics.items():
+            writer.writerow([k, round(v, 6), desc.get(k, "")])
+
+    print(f"[SAVE] Combined report -> {csv_path}")
+
+    return {
+        "summary_csv": csv_path,
+        "cm_mix_soft": cm_mix_soft,
+        "cm_pig_soft": cm_pig_soft,
+        "cm_puremix_soft": cm_puremix_soft,
+        "cm_mix_conf": cm_mix_conf,
+        "cm_pig_conf": cm_pig_conf,
+        "cm_puremix_conf": cm_puremix_conf
+    }
+
 # SUMMARY + CONCLUSIONS
-# ============================================================================ #
+
 def summarize_confusion_matrices(cm_dict, detailed_results, name, base_out):
     def multilabel_metrics_from_coactivation(cm):
         cm = np.array(cm, dtype=np.float64)
@@ -712,124 +966,19 @@ def write_conclusions(detailed_results, base_out, name):
     print(f"[SAVE] Conclusions -> {path}")
 
 
-# ============================================================================ #
-# LABEL DECODERS
-# ============================================================================ #
-def decode_pigment_and_group(y_like: np.ndarray, n_p: int, threshold=0.5):
-    y_pig = y_like[:, :n_p]
-    y_mix = y_like[:, n_p:n_p + 4]
-    results = []
-    for i in range(len(y_like)):
-        active_pigs = np.where(y_pig[i] > threshold)[0]
-        active_mix = np.where(y_mix[i] > threshold)[0]
-        labels = []
-        for p in active_pigs:
-            if 0 in active_mix:
-                labels.append(f"P{p + 1:02d}_Pure")
-            if any(m > 0 for m in active_mix):
-                labels.append(f"P{p + 1:02d}_Mixture")
-        results.append(";".join(labels) if labels else "")
-    return np.array(results, dtype=object)
-
-
-def decode_pigment_and_mix4(y_like: np.ndarray, n_p: int, threshold=0.5):
-    y_pig = y_like[:, :n_p]
-    y_mix = y_like[:, n_p:n_p + 4]
-    mix_names = ["Pure", "M1", "M2", "M3"]
-    results = []
-    for i in range(len(y_like)):
-        active_pigs = np.where(y_pig[i] > threshold)[0]
-        active_mix = np.where(y_mix[i] > threshold)[0]
-        labels = [f"P{p + 1:02d}_{mix_names[m]}" for p in active_pigs for m in active_mix]
-        results.append(";".join(labels) if labels else "")
-    return np.array(results, dtype=object)
+import numpy as np
+import warnings
+from sklearn.metrics import (
+    accuracy_score, f1_score, precision_score, recall_score,
+    roc_auc_score, average_precision_score, log_loss, hamming_loss
+)
 
 
 # ============================================================================ #
-# VISUALIZATION UTILITIES
-# ============================================================================ #
-def plot_confusion_matrix(cm, classes, title, save_path, annotate_percent=True):
-    """Plots confusion or coactivation matrices with consistent styling."""
-    n = len(classes)
-    fig_size = max(6, min(0.45 * n, 20))
-    plt.figure(figsize=(fig_size, fig_size))
-    ax = plt.gca()
-
-    base_cmap = mpl_cm.get_cmap("Blues", 256)
-    cmap_array = base_cmap(np.linspace(0, 1, 256))
-    cmap_array[0, :] = [1, 1, 1, 1]
-    cmap = ListedColormap(cmap_array)
-
-    vmax = np.max(cm) if np.max(cm) > 0 else 1.0
-    im = ax.imshow(cm, interpolation="nearest", cmap=cmap, vmin=0, vmax=vmax)
-
-    ax.set_xticks(np.arange(len(classes)))
-    ax.set_yticks(np.arange(len(classes)))
-    ax.set_xticklabels(classes, rotation=60, ha="right", fontsize=9)
-    ax.set_yticklabels(classes, fontsize=9)
-    ax.set_xlabel("Predicted", fontsize=11)
-    ax.set_ylabel("True", fontsize=11)
-    ax.set_title(title, fontsize=13, pad=10)
-
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            value = cm[i, j] * 100 if annotate_percent else cm[i, j]
-            if value < 0.005:
-                continue
-            ax.text(j, i, f"{value:.2f}", ha="center", va="center", color="black", fontsize=8)
-
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="4%", pad=0.2)
-    plt.colorbar(im, cax=cax, format="%.2f")
-
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-    print(f"[SAVE] Matrix -> {save_path}")
-
-
-# ============================================================================ #
-# CONFUSION & COACTIVATION BUILDERS
-# ============================================================================ #
-def confusion_from_labels(y_true_labels, y_pred_labels, classes=None):
-    """Builds a normalized confusion matrix from label strings."""
-    y_true_labels = np.asarray(y_true_labels, dtype=object)
-    y_pred_labels = np.asarray(y_pred_labels, dtype=object)
-    if classes is None:
-        seen = []
-        for x in list(y_true_labels) + list(y_pred_labels):
-            if x not in seen:
-                seen.append(x)
-        classes = list(seen)
-
-    idx = {c: i for i, c in enumerate(classes)}
-    valid_true = np.array([lbl in idx for lbl in y_true_labels])
-    valid_pred = np.array([lbl in idx for lbl in y_pred_labels])
-    mask = valid_true & valid_pred
-    ti = np.array([idx[lbl] for lbl in y_true_labels[mask]], dtype=int)
-    pi = np.array([idx[lbl] for lbl in y_pred_labels[mask]], dtype=int)
-    cm = sk_confusion_matrix(ti, pi, labels=range(len(classes)))
-    row_sums = cm.sum(axis=1, keepdims=True).astype(float)
-    row_sums[row_sums == 0.0] = 1.0
-    return cm.astype(float) / row_sums, classes
-
-
-def soft_confusion_matrix(y_true, y_pred_prob, class_names, normalize="row"):
-    """Computes soft (coactivation) confusion matrix."""
-    cm = np.dot(y_true.T, y_pred_prob)
-    if normalize == "row":
-        row_sums = cm.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1.0
-        cm = cm / row_sums
-    return cm
-
-
-# ============================================================================ #
-# METRICS COMPUTATION
+# BASE METRICS FUNCTION (tu versión original con ligeros ajustes)
 # ============================================================================ #
 def compute_metrics(y_true, y_pred_bin, y_pred_prob):
-    """Computes all main multi-label metrics."""
+    """Compute main multi-label classification metrics."""
     metrics = {}
     y_true_b = (y_true > 0.5).astype(bool)
     y_pred_b = (y_pred_bin > 0.5).astype(bool)
@@ -879,51 +1028,67 @@ def compute_metrics(y_true, y_pred_bin, y_pred_prob):
 
 
 # ============================================================================ #
-# COMBINED REPORT CREATOR
+# EXTENDED DETAILED METRICS (GLOBAL + PER-PIGMENT + PER-MIXTURE)
 # ============================================================================ #
-def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
-    os.makedirs(output_dir, exist_ok=True)
-    cm_conf_dir = os.path.join(output_dir, "confusion_matrix")
-    cm_coact_dir = os.path.join(output_dir, "coactivation_matrix")
-    os.makedirs(cm_conf_dir, exist_ok=True)
-    os.makedirs(cm_coact_dir, exist_ok=True)
+def compute_detailed_metrics(y_true, y_pred_prob, num_files, threshold=0.5, verbose=False):
+    """
+    Computes detailed metrics:
+      - Global metrics
+      - Per pigment
+      - Per mixture (Pure, M1, M2, M3)
+    """
+    y_pred_bin = (y_pred_prob > threshold).astype(int)
+    results = {}
 
-    y_pred_bin = (y_pred_prob > 0.5).astype(int)
-    y_true_pig, y_true_mix = y_true[:, :n_pigments], y_true[:, n_pigments:n_pigments+4]
-    y_pred_pig, y_pred_mix = y_pred_bin[:, :n_pigments], y_pred_bin[:, n_pigments:n_pigments+4]
+    # --- GLOBAL METRICS ---
+    results["global"] = compute_metrics(y_true, y_pred_bin, y_pred_prob)
 
-    classes_pig = [f"P{i+1:02d}" for i in range(n_pigments)]
-    classes_mix = ["Pure", "M1", "M2", "M3"]
+    # --- SPLIT: PIGMENTS / MIXTURES ---
+    y_true_pig = y_true[:, :num_files]
+    y_true_mix = y_true[:, num_files:num_files+4]
+    y_pred_pig = y_pred_bin[:, :num_files]
+    y_pred_mix = y_pred_bin[:, num_files:num_files+4]
+    y_prob_pig = y_pred_prob[:, :num_files]
+    y_prob_mix = y_pred_prob[:, num_files:num_files+4]
 
-    # === CONFUSION ===
-    y_true_pig_idx = np.argmax(y_true_pig, axis=1)
-    y_pred_pig_idx = np.argmax(y_pred_prob[:, :n_pigments], axis=1)
-    cm_conf_pig = sk_confusion_matrix(y_true_pig_idx, y_pred_pig_idx, normalize="true")
-    plot_confusion_matrix(cm_conf_pig, classes_pig, "Pigments (Confusion)", os.path.join(cm_conf_dir, f"{name}_cm_PIGMENTS.png"))
+    # --- Global per-group ---
+    results["pigments_global"] = compute_metrics(y_true_pig, y_pred_pig, y_prob_pig)
+    results["mixtures_global"] = compute_metrics(y_true_mix, y_pred_mix, y_prob_mix)
 
-    y_true_mix_idx = np.argmax(y_true_mix[:, 1:], axis=1)
-    y_pred_mix_idx = np.argmax(y_pred_prob[:, n_pigments+1:], axis=1)
-    cm_conf_mix = sk_confusion_matrix(y_true_mix_idx, y_pred_mix_idx, normalize="true")
-    plot_confusion_matrix(cm_conf_mix, ["M1", "M2", "M3"], "Mixtures (Confusion)", os.path.join(cm_conf_dir, f"{name}_cm_MIXTURES.png"))
+    # --- Per-pigment metrics ---
+    pigment_metrics = []
+    for i in range(num_files):
+        m, _ = compute_metrics(
+            y_true_pig[:, [i]], y_pred_pig[:, [i]], y_prob_pig[:, [i]]
+        )
+        m["pigment"] = f"P{i+1:02d}"
+        pigment_metrics.append(m)
+    results["per_pigment"] = pigment_metrics
 
-    # === COACTIVATION ===
-    cm_coact_pig = soft_confusion_matrix(y_true_pig, y_pred_prob[:, :n_pigments], class_names=classes_pig)
-    plot_confusion_matrix(cm_coact_pig, classes_pig, "Pigments (Coactivation)", os.path.join(cm_coact_dir, f"{name}_cm_PIGMENTS_SOFT.png"))
+    # --- Per-mixture metrics ---
+    mix_names = ["Pure", "M1", "M2", "M3"]
+    mix_metrics = []
+    for j in range(4):
+        m, _ = compute_metrics(
+            y_true_mix[:, [j]], y_pred_mix[:, [j]], y_prob_mix[:, [j]]
+        )
+        m["mixture"] = mix_names[j]
+        mix_metrics.append(m)
+    results["per_mixture"] = mix_metrics
 
-    cm_coact_mix = soft_confusion_matrix(y_true_mix, y_pred_prob[:, n_pigments:n_pigments+4], class_names=classes_mix)
-    plot_confusion_matrix(cm_coact_mix, classes_mix, "Mixtures (Coactivation)", os.path.join(cm_coact_dir, f"{name}_cm_MIXTURES_SOFT.png"))
+    # --- Verbose console output ---
+    if verbose:
+        print("\n[DETAILED METRICS REPORT]")
+        for scope, val in results.items():
+            if isinstance(val, tuple):
+                metrics, _ = val
+                print(f"\n--- {scope.upper()} ---")
+                for mk, mv in metrics.items():
+                    print(f"{mk:20s}: {mv:.4f}")
+            elif isinstance(val, list):
+                print(f"\n--- {scope.upper()} ---")
+                for entry in val:
+                    label = entry.get("pigment") or entry.get("mixture")
+                    print(f"{label}: F1={entry['f1']:.3f}, Prec={entry['precision']:.3f}, Rec={entry['recall']:.3f}")
 
-    # === METRICS SUMMARY ===
-    metrics, descriptions = compute_metrics(y_true, y_pred_bin, y_pred_prob)
-    summary_path = os.path.join(output_dir, f"{name}_combined_report.csv")
-    with open(summary_path, "w", newline="") as f:
-        f.write("metric,value,description\n")
-        for k, v in metrics.items():
-            f.write(f"{k},{v:.6f},{descriptions.get(k, '')}\n")
-
-    print(f"[SAVE] Combined report -> {summary_path}")
-    return summary_path
-
-
-
-
+    return results

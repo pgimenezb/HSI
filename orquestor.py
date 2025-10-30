@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import collections
 from scipy.interpolate import interp1d
+from sklearn.metrics import confusion_matrix 
+from scipy.optimize import nnls
 
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.data.config import variables
@@ -21,22 +23,27 @@ from report import (
     generate_combined_report,
     compute_metrics,
     reflectance_to_ks,
-    apply_km_unmixing,
-    fast_km_unmixing,
+    ks_to_reflectance,
+    estimate_k_s_per_pigment,
+    reflectance_to_ks,
+    km_unmix_nnls,
+    apply_km_unmixing_nnls,
     generate_synthetic_mixtures,
     get_wavelengths_and_labels,
-    match_spectral_resolution,
     apply_per_file_region_quotas,
     equalize_across_files_by_pigment,
     save_region_subregion_usage,
     export_splits_csv,
     summarize_model,
     per_pigment_metrics,
-    top_confusions,
     plot_comparative_spectra,
     write_conclusions,
     summarize_confusion_matrices,
-    soft_confusion_matrix
+    soft_confusion_matrix,
+    plot_confusion_matrix,
+    confusion_from_labels,
+    soft_confusion_matrix,
+    compute_detailed_metrics
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -93,18 +100,22 @@ def main():
     num_classes = y_train.shape[1]
     print(f"[INFO] Model input length adjusted to {input_len} bands ({num_classes} outputs)")
 
-    # 5️⃣bis Kubelka–Munk Synthetic Mixing & Unmixing (auto-scaled VIS/SWIR wavelengths)
+    # 5️⃣ Spectra 
+    spectra_dir = os.path.join(out_dir, f"{args.models}", "spectra")
+    plot_comparative_spectra(df_used, base_out=spectra_dir, name="dataset_per pigment", per_file=True, num_blocks=6)
+    plot_comparative_spectra(df_used, base_out=spectra_dir, name="dataset_full", per_file=False)
+
+    # 5️⃣ bis Kubelka–Munk Synthetic Mixing & Unmixing (auto-scaled VIS/SWIR wavelengths)
     DO_KM_MIX = variables.get("do_km_mixing", True)
     if DO_KM_MIX:
         print("\n[KM] Generating synthetic mixtures and performing Kubelka–Munk unmixing...")
 
-        # === Compute mean spectrum per pigment (average over one-hot samples)
+        # === Compute mean spectrum per pigment (promedio de muestras puras)
         pigment_means = []
         for i in range(y_train.shape[1]):
             mask = y_train[:, i] > 0
             if np.sum(mask) > 0:
-                spec = np.mean(X_train[mask], axis=0)
-                pigment_means.append(spec.squeeze())
+                pigment_means.append(np.mean(X_train[mask], axis=0))
         pigment_means = np.array(pigment_means).reshape(len(pigment_means), -1)
         print(f"[KM] {len(pigment_means)} pigments detected. Shape={pigment_means.shape}")
 
@@ -115,28 +126,34 @@ def main():
             n_mix=tuple(variables.get("km_n_mix", (2, 3)))
         )
 
-        # === Convert reflectance → K/S
-        KS_pure = reflectance_to_ks(pigment_means)
-        k_set = KS_pure
-        s_set = np.ones_like(KS_pure)
+        # === Estimate K, S per pigment (modelo físico realista)
+        K_set, S_set = estimate_k_s_per_pigment(pigment_means)
 
-        # === Apply unmixing
-        if variables.get("km_method", "minimize") == "lstsq":
-            alphas_pred = fast_km_unmixing(mixtures, k_set, s_set)
-        else:
-            alphas_pred = apply_km_unmixing(mixtures, k_set, s_set)
+        # === Apply improved KM unmixing (bounded LSQ / NNLS)
+        alphas_pred = apply_km_unmixing_nnls(
+            mixtures, K_set, S_set,
+            top_k=max(variables.get("km_n_mix", (2, 3)))  # p. ej. 3
+        )
 
-        # === Compute mean MSE
+        # === Compute mean unmixing error
         errors = []
         for a_true, a_pred in zip(alphas_true, alphas_pred):
-            if len(a_pred) > len(a_true):
+            a_true = np.array(a_true)
+            a_pred = np.array(a_pred)
+            # Ajustar longitud
+            if len(a_pred) != len(a_true):
                 a_pred = a_pred[np.argsort(a_pred)[-len(a_true):]]
-            errors.append(np.mean((np.array(a_true) - np.array(a_pred)) ** 2))
+            # Normalizar ambas
+            if np.sum(a_pred) > 0:
+                a_pred /= np.sum(a_pred)
+            if np.sum(a_true) > 0:
+                a_true /= np.sum(a_true)
+            errors.append(np.mean((a_true - a_pred) ** 2))
         mean_mse = np.mean(errors)
         print(f"[KM] Mean unmixing error (MSE): {mean_mse:.6f}")
 
         # === Output folder
-        km_dir = os.path.join(out_dir, f"{args.models}", "KM_unmixing_results")
+        km_dir = os.path.join(out_dir, str(args.models), "KM_unmixing_results")
         os.makedirs(km_dir, exist_ok=True)
 
         # === Save data arrays
@@ -150,25 +167,15 @@ def main():
             data_type=variables.get("data_type", ["vis"])
         )
 
-        # Separar VIS y SWIR (si aplica)
-        vis_mask = wls < 1000
-        vis = wls[vis_mask]
-        swir = wls[~vis_mask]
-
-        print(f"[DEBUG] Wavelength range: {wls[0]:.1f}–{wls[-1]:.1f} nm | {len(wls)} bands")
-
-        # === Save spectra as CSV
+        # === Guardar espectros
         df_mix = pd.DataFrame(mixtures, columns=[f"{wl:.1f}nm" for wl in wls])
         df_mix.to_csv(os.path.join(km_dir, "synthetic_mixtures.csv"), index=False)
 
         df_pure = pd.DataFrame(pigment_means, columns=[f"{wl:.1f}nm" for wl in wls])
         df_pure.to_csv(os.path.join(km_dir, "pigment_means.csv"), index=False)
 
-        # === Export α_true / α_pred as readable CSVs
-        max_len_true = max(len(a) for a in alphas_true)
-        max_len_pred = max(len(a) for a in alphas_pred)
-        max_len = max(max_len_true, max_len_pred)
-
+        # === Export α_true / α_pred como CSV legibles
+        max_len = max(max(len(a) for a in alphas_true), max(len(a) for a in alphas_pred))
         alphas_true_padded = [np.pad(a, (0, max_len - len(a))) for a in alphas_true]
         alphas_pred_padded = [np.pad(a, (0, max_len - len(a))) for a in alphas_pred]
 
@@ -176,21 +183,18 @@ def main():
         alphas_pred_df = pd.DataFrame(alphas_pred_padded, columns=[f"alpha_pred_{i+1}" for i in range(max_len)])
         alphas_true_df.to_csv(os.path.join(km_dir, "alphas_true.csv"), index=False)
         alphas_pred_df.to_csv(os.path.join(km_dir, "alphas_pred.csv"), index=False)
-
         print(f"[SAVE] α_true proportions -> {os.path.join(km_dir, 'alphas_true.csv')}")
         print(f"[SAVE] α_pred proportions -> {os.path.join(km_dir, 'alphas_pred.csv')}")
 
-        # === Reconstruct mixtures from predicted α (with pigment info)
+        # === Reconstrucción de mezclas desde α_pred
         print("[KM] Reconstructing mixtures from predicted alphas...")
-
-        def ks_to_reflectance(KS):
-            KS = np.maximum(KS, 1e-6)  # evita valores muy pequeños o negativos
-            R = (1 + KS - np.sqrt(KS**2 + 2*KS))
-            return np.clip(R, 0, 1)
 
         reconstructed = []
         for alpha in alphas_pred:
-            KS_recon = np.dot(alpha, k_set) / np.dot(alpha, s_set)
+            alpha = np.array(alpha)
+            if np.sum(alpha) > 0:
+                alpha /= np.sum(alpha)
+            KS_recon = np.dot(alpha, K_set) / np.dot(alpha, S_set)
             R_recon = ks_to_reflectance(KS_recon)
             reconstructed.append(R_recon)
         reconstructed = np.array(reconstructed)
@@ -198,7 +202,7 @@ def main():
         df_reconstructed = pd.DataFrame(reconstructed, columns=[f"{wl:.1f}nm" for wl in wls])
         df_reconstructed.to_csv(os.path.join(km_dir, "reconstructed_mixtures.csv"), index=False)
 
-        # === Plot example synthetic spectra ===
+        # === Plot ejemplos de mezclas sintéticas ===
         plt.figure(figsize=(12, 5))
         n_show = min(5, len(mixtures))
         for i in range(n_show):
@@ -207,7 +211,7 @@ def main():
             mix_label = ", ".join([f"P{p+1}:{a_true[p]:.2f}" for p in pigments_used])
             plt.plot(wls, mixtures[i], lw=2, label=f"Mix {i+1} — {mix_label}")
 
-        plt.xlabel("Data type, channel and wavelength (nm)")
+        plt.xlabel("Wavelength (nm)")
         plt.ylabel("Reflectance")
         plt.title("Example Synthetic Mixtures (Kubelka–Munk)")
         plt.xticks(tick_positions, tick_labels, rotation=65, ha="right", fontsize=8)
@@ -216,7 +220,7 @@ def main():
         plt.savefig(os.path.join(km_dir, "synthetic_mixtures_examples.png"), dpi=300)
         plt.close()
 
-        # === Plot comparison between true and reconstructed mixtures ===
+        # === Plot comparación True vs Reconstruido ===
         plt.figure(figsize=(12, 5))
         colors = plt.cm.tab10(np.linspace(0, 1, n_show))
         for i in range(n_show):
@@ -229,7 +233,7 @@ def main():
             plt.plot(wls, mixtures[i], color=colors[i], lw=2, label=f"True {i+1} — {label_true}")
             plt.plot(wls, reconstructed[i], "--", color=colors[i], lw=2, label=f"Pred {i+1} — {label_pred}")
 
-        plt.xlabel("Data type, channel and wavelength (nm)")
+        plt.xlabel("Wavelength (nm)")
         plt.ylabel("Reflectance")
         plt.title("True vs Reconstructed Mixtures (Kubelka–Munk)")
         plt.xticks(tick_positions, tick_labels, rotation=65, ha="right", fontsize=8)
@@ -239,6 +243,7 @@ def main():
         plt.close()
 
         print(f"[KM] Plots saved in {km_dir}")
+
 
     # 6️⃣ TRAINING  
     model_names = [m.strip() for m in args.models.split(",") if m.strip()]
@@ -263,13 +268,6 @@ def main():
         else:
             model = res
 
-        print(f"[EVAL] Predicting test set with {name}...")
-        y_pred_prob = model.predict(X_test, verbose=0)
-
-        base_out = os.path.join(out_dir, name)
-        os.makedirs(base_out, exist_ok=True)
-
-
         # === Evaluar en el conjunto de test ===
         print(f"[EVAL] Predicting test set with {name}...")
         y_pred_prob = model.predict(X_test, verbose=0)
@@ -284,7 +282,7 @@ def main():
         df_used.to_csv(df_used_path, index=False)
         print(f"[SAVE] DataFrame -> {df_used_path}")
 
-        # === Guardar uso de región/subregión ===
+        # === Guardar uso de región/subregión ===top_confusions
         region_usage_path = os.path.join(base_out, f"{name}_region_subregion_usage.csv")
         save_region_subregion_usage(df_raw, df_used, region_usage_path)
 
@@ -299,69 +297,28 @@ def main():
         for k, p in split_paths.items():
             print(f"[SAVE] Split CSV ({k}) -> {p}")
 
-        # === UNIFIED REPORT ===
-        eval_dir = os.path.join(base_out, "evaluation")
-        generate_combined_report(
+        # === COACTIVATION AND CONFUSION MATRIX ===
+        report_data = generate_combined_report(
             y_true=y_test,
             y_pred_prob=y_pred_prob,
             n_pigments=int(variables["num_files"]),
-            output_dir=eval_dir,
+            output_dir=os.path.join(base_out, "evaluation"),
             name=name
         )
 
-        # === Calcular matrices de coactivación soft ===
-        n_p = int(variables["num_files"])
-        y_pig_true, y_mix_true = y_test[:, :n_p], y_test[:, n_p:n_p+4]
-        y_pig_pred, y_mix_pred = y_pred_prob[:, :n_p], y_pred_prob[:, n_p:n_p+4]
-        classes_pig = [f"P{i+1:02d}" for i in range(n_p)]
-        classes_mix = ["Pure", "M1", "M2", "M3"]
+        # === Optional: model summary and spectra ===
+        base_out = os.path.join(out_dir, name)
+        os.makedirs(base_out, exist_ok=True)
 
-        cm_pig_soft = soft_confusion_matrix(y_pig_true, y_pig_pred, classes_pig)
-        cm_mix_soft = soft_confusion_matrix(y_mix_true, y_mix_pred, classes_mix)
-
-        # === Otras matrices opcionales ===
-        cm_puremix_soft = soft_confusion_matrix(y_test[:, :n_p+4], y_pred_prob[:, :n_p+4], class_names=None)
-        cm_soft_perPigMix = np.dot(y_test.T, y_pred_prob)
-
-        # === Diccionario para resumen ===
-        cm_dict = {
-            "pigments": {"matrix": cm_pig_soft, "classes": classes_pig, "desc": "Pigment coactivation"},
-            "mixtures": {"matrix": cm_mix_soft, "classes": classes_mix, "desc": "Mixture coactivation"},
-            "pure_mix": {"matrix": cm_puremix_soft, "classes": ["Pure/Mix"], "desc": "Pure vs Mix"},
-            "perPigMix": {"matrix": cm_soft_perPigMix, "classes": [f"C{i+1}" for i in range(y_test.shape[1])],
-                          "desc": "Per pigment × mixture coactivation"},
-        }
-
-        # === MÉTRICAS DETALLADAS ===
-        detailed_results = {"global": compute_metrics(y_test, (y_pred_prob > 0.5).astype(int), y_pred_prob)}
-
-        csv_out_dir = os.path.join(base_out, "datasets")
-        os.makedirs(csv_out_dir, exist_ok=True)
-        metrics_csv = os.path.join(csv_out_dir, f"{name}_metrics_summary.csv")
-
-        header = ["model_name", "scope", "metric_name", "value", "description"]
-        write_header = not os.path.exists(metrics_csv)
-        with open(metrics_csv, "a", newline="") as f:
-            writer = csv.writer(f)
-            if write_header:
-                writer.writerow(header)
-            metrics, descriptions = detailed_results["global"]
-            for key, value in metrics.items():
-                writer.writerow([name, "global", key, round(value, 6), descriptions.get(key, "")])
-
-        print(f"[SAVE] Detailed metrics report -> {metrics_csv}")
-
-        # === SUMMARY (coactivación vs métricas globales) ===
-        summarize_confusion_matrices(cm_dict, detailed_results, name, base_out)
-
-        # === Extra summaries ===
+        # Guardar resumen del modelo
         summarize_model(name, variables, X_train, y_train, model, base_out)
-        per_pigment_metrics(y_test, y_pred_prob, variables, base_out, name)
-        top_confusions(cm_soft_perPigMix, [f"P{i+1}" for i in range(y_test.shape[1])], base_out, name)
-        plot_comparative_spectra(X_test, y_test, y_pred_prob, base_out, name, pigment_indices=[0, 5, 10])
+        plot_dir = str(base_out)
 
-        # === Conclusiones finales ===
-        write_conclusions(detailed_results, base_out, name)
+        # Graficar espectros comparativos
+        plot_comparative_spectra(X_test, y_test, y_pred_prob, plot_dir, name)
+
+        # === Conclusions ===
+        write_conclusions(report_data["detailed_metrics"], plot_dir, name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

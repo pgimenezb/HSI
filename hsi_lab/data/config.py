@@ -76,5 +76,6 @@ variables = {
     "do_km_mixing": True,        # Enable or disable synthetic KM stage
     "km_n_samples": 2000,        # Number of synthetic mixtures to generate
     "km_n_mix": (2, 3),          # Range of components per mixture (binary/ternary)
-    "km_method": "lstsq"         # "minimize" for fast unmixing or "lstsq" for fast unmixing
+    "km_method": "minimize",      # "minimize" for fast unmixing or "lstsq" for fast unmixing
+    "km_method": "nnls"
 }
