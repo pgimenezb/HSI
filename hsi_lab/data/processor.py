@@ -411,6 +411,15 @@ class HSIDataProcessor:
 
         # === EN RAW NO aplicamos cuotas ni igualación ===
         if RAW:
+            # Aun en modo RAW, eliminamos las primeras bandas SWIR (swir_1 → swir_35)
+            cols_to_drop = [f"swir_{i}" for i in range(1, 36)]
+            df_merged = df_merged.drop(columns=[c for c in cols_to_drop if c in df_merged.columns], errors="ignore")
+
+            # Debug 
+            vis_cols = [c for c in df_merged.columns if c.startswith("vis_")]
+            swir_cols = [c for c in df_merged.columns if c.startswith("swir_")]
+            print(f"[DEBUG][RAW MODE] VIS: {len(vis_cols)}, SWIR: {len(swir_cols)}, TOTAL: {len(vis_cols) + len(swir_cols)}")
+
             return df_merged
 
         # === (modo 'filtered') Cuotas ===
@@ -441,8 +450,17 @@ class HSIDataProcessor:
                 kind="mergesort"
             ).drop(columns=["_FileNum"]).reset_index(drop=True)
 
-        return df_out
+        # === Eliminar las primeras 35 bandas SWIR (swir_1 → swir_35) ===
+        cols_to_drop = [f"swir_{i}" for i in range(1, 36)]
+        df_out = df_out.drop(columns=[c for c in cols_to_drop if c in df_out.columns], errors="ignore")
+        df_out = df_out.loc[:, ~df_out.columns.duplicated()]
 
+        # 🔎 Debug final
+        vis_cols = [c for c in df_out.columns if c.startswith("vis_")]
+        swir_cols = [c for c in df_out.columns if c.startswith("swir_")]
+        print(f"[DEBUG][FINAL DF_OUT] VIS: {len(vis_cols)}, SWIR: {len(swir_cols)}, TOTAL: {len(vis_cols) + len(swir_cols)}")
+
+        return df_out
 
 
     def save_rows_for_file(self, target_file: str, out_csv_path: str):

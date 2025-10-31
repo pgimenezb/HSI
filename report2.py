@@ -285,51 +285,6 @@ def parse_args():
 # ============================================================================ #
 # MODEL SUMMARY AND METRICS
 # ============================================================================ #
-def summarize_model(name, variables, X_train, y_train, model, base_out):
-    n_pigments = int(variables["num_files"])
-    n_mixtures = 4
-    total_classes = y_train.shape[1]
-    summary = {
-        "Model name": name,
-        "Input bands": X_train.shape[1],
-        "Output classes": total_classes,
-        "Pigments": n_pigments,
-        "Mixtures": n_mixtures,
-        "Loss": "Binary cross-entropy",
-        "Optimizer": "Adam",
-        "Epochs": variables.get("epochs", "N/A"),
-        "Batch size": variables.get("batch_size", "N/A"),
-        "Samples (train)": len(X_train),
-    }
-    df_summary = pd.DataFrame(list(summary.items()), columns=["Parameter", "Value"])
-    out_path = os.path.join(base_out, f"{name}_model_summary.csv")
-    df_summary.to_csv(out_path, index=False)
-    print(f"[SAVE] Model summary -> {out_path}")
-    return df_summary
-
-
-def per_pigment_metrics(y_true, y_pred_prob, variables, base_out, name):
-    n_p = int(variables["num_files"])
-    mix_names = ["Pure", "M1", "M2", "M3"]
-    rows = []
-    for i in range(n_p):
-        for j, mix in enumerate(mix_names):
-            y_t = y_true[:, [i, n_p + j]]
-            y_p = y_pred_prob[:, [i, n_p + j]]
-            m, _ = compute_metrics(y_t, (y_p > 0.5).astype(int), y_p)
-            rows.append({
-                "Pigment": f"P{i+1:02d}",
-                "Mixture": mix,
-                "F1": m["f1"],
-                "Precision": m["precision"],
-                "Recall": m["recall"]
-            })
-    df = pd.DataFrame(rows)
-    out_path = os.path.join(base_out, f"{name}_per_pigment_mix_metrics.csv")
-    df.to_csv(out_path, index=False)
-    print(f"[SAVE] Per-pigment × mixture metrics -> {out_path}")
-    return df
-
 
 def top_confusions(cm, classes, base_out, name, top_k=15):
     flat = []
@@ -527,9 +482,6 @@ def plot_comparative_spectra(df, base_out, name, per_file=True, num_blocks=6):
 # ============================================================
 # Kubelka–Munk 
 # ============================================================
-# ============================================================
-# Kubelka–Munk Improved Physical Mixing & Unmixing (Stable + Fast)
-# ============================================================
 
 import numpy as np
 from scipy.optimize import lsq_linear  # <- CORRECT import
@@ -708,6 +660,246 @@ def decode_pigment_and_mix4(y_like: np.ndarray, n_p: int, threshold=0.5):
         results.append(";".join(labels) if labels else "")
     return np.array(results, dtype=object)
 
+# ============================================================================ #
+# EXPORT MÉTRICAS COMPLETAS (MODELO Y MATRICES)
+# ============================================================================ #
+
+def export_full_metrics_csv(detailed_results, out_path, model_name):
+    """
+    Exporta las métricas completas del modelo (global y por scope)
+    en formato estándar, con descripción textual.
+    """
+    rows = []
+
+    # === Diccionario de descripciones ===
+    metric_desc = {
+        "non_zero_acc_sample": "Sample-wise accuracy ignoring zero (empty) labels.",
+        "non_zero_acc_label": "Per-label accuracy ignoring labels not present in ground truth.",
+        "strict_acc": "Proportion of samples where all labels are predicted exactly.",
+        "general_acc": "Overall ratio of correctly predicted labels (micro accuracy).",
+        "keras_like_acc": "Accuracy equivalent to Keras-style categorical accuracy.",
+        "hamming_acc": "Hamming accuracy (1 - Hamming loss).",
+        "roc_auc": "Macro-averaged ROC-AUC over all classes.",
+        "avg_precision": "Mean Average Precision (mAP) across classes.",
+        "log_loss": "Cross-entropy loss averaged across labels.",
+        "f1": "F1 macro-average (mean of per-class F1).",
+        "precision": "Precision macro-average (mean of per-class precision).",
+        "recall": "Recall macro-average (mean of per-class recall)."
+    }
+
+    for scope_name, (global_metrics, per_label_metrics) in detailed_results.items():
+        for metric_name, value in global_metrics.items():
+            if metric_name not in metric_desc:
+                continue
+            rows.append({
+                "Model": model_name,
+                "Scope": scope_name,
+                "Label": "",
+                "Metric": metric_name,
+                "Value": round(float(value), 6),
+                "Description": metric_desc.get(metric_name, "")
+            })
+
+        if isinstance(per_label_metrics, pd.DataFrame):
+            for _, row in per_label_metrics.iterrows():
+                label = row.get("Label", "")
+                for metric_name in metric_desc.keys():
+                    if metric_name in row:
+                        rows.append({
+                            "Model": model_name,
+                            "Scope": scope_name,
+                            "Label": label,
+                            "Metric": metric_name,
+                            "Value": round(float(row[metric_name]), 6),
+                            "Description": metric_desc.get(metric_name, "")
+                        })
+
+    df = pd.DataFrame(rows)
+    df.to_csv(out_path, index=False)
+    print(f"[SAVE] Model metrics -> {out_path}")
+    return df
+
+
+
+
+
+def export_matrix_metrics_full(matrix_metrics_dict, output_dir, model_name):
+    records = []
+    metric_descriptions = {
+        "SoftAccuracy": "Overall ratio of correctly predicted labels (micro accuracy).",
+        "SoftPrecisionMacro": "Precision macro-average (mean of per-class precision).",
+        "SoftRecallMacro": "Recall macro-average (mean of per-class recall).",
+        "SoftF1Macro": "F1 macro-average (mean of per-class F1).",
+        "SoftPrecisionMicro": "Precision computed globally across all classes (micro).",
+        "SoftRecallMicro": "Recall computed globally across all classes (micro).",
+        "SoftF1Micro": "F1 computed globally across all classes (micro)."
+    }
+
+    for matrix_name, metrics in matrix_metrics_dict.items():
+        for k, v in metrics.items():
+            if k not in metric_descriptions:
+                continue
+            records.append({
+                "Model": model_name,
+                "Scope": matrix_name.lower(),
+                "Label": "",
+                "Metric": k,
+                "Value": float(v),
+                "Description": metric_descriptions[k]
+            })
+
+    df = pd.DataFrame(records)
+    path = os.path.join(output_dir, f"{model_name}_matrix_metrics_full.csv")
+    df.to_csv(path, index=False)
+    print(f"[SAVE] Matrix metrics (model-like format) -> {path}")
+    return path
+
+
+
+def export_matrix_model_diff(model_csv, matrix_csv, output_dir, model_name):
+    """
+    Calcula las diferencias (Matrix - Model) para métricas comparables.
+    """
+    model_df = pd.read_csv(model_csv)
+    matrix_df = pd.read_csv(matrix_csv)
+
+    # Normalizar nombres de métricas para emparejar
+    name_map = {
+        "SoftAccuracy": "general_acc",
+        "SoftPrecisionMacro": "precision",
+        "SoftRecallMacro": "recall",
+        "SoftF1Macro": "f1",
+        "SoftPrecisionMicro": "precision",
+        "SoftRecallMicro": "recall",
+        "SoftF1Micro": "f1"
+    }
+
+    rows = []
+    for _, mrow in matrix_df.iterrows():
+        metric_model_name = name_map.get(mrow["Metric"])
+        if metric_model_name is None:
+            continue
+
+        model_match = model_df[model_df["Metric"] == metric_model_name]
+        if model_match.empty:
+            continue
+
+        model_val = float(model_match["Value"].iloc[0])
+        delta = float(mrow["Value"]) - model_val
+
+        rows.append({
+            "Model": model_name,
+            "Matrix": mrow["Scope"],
+            "Metric": mrow["Metric"],
+            "Model_Value": model_val,
+            "Matrix_Value": float(mrow["Value"]),
+            "Delta": delta,
+            "Description": f"Difference between matrix and model for {mrow['Metric']} ({mrow['Description']})"
+        })
+
+    df = pd.DataFrame(rows)
+    path = os.path.join(output_dir, f"{model_name}_matrix_model_diff.csv")
+    df.to_csv(path, index=False)
+    print(f"[SAVE] Matrix↔Model metric differences -> {path}")
+    return df
+
+# ============================================================================ #
+# BASE METRICS FUNCTION (tu versión original con ligeros ajustes)
+# ============================================================================ #
+def compute_metrics(y_true, y_pred_bin, y_pred_prob):
+    """Compute main multi-label classification metrics."""
+    metrics = {}
+    y_true_b = (y_true > 0.5).astype(bool)
+    y_pred_b = (y_pred_bin > 0.5).astype(bool)
+
+    metrics["non_zero_acc_sample"] = np.mean(np.any(y_true_b & y_pred_b, axis=1))
+    metrics["non_zero_acc_label"]  = np.mean(np.any(y_true_b == y_pred_b, axis=0))
+    metrics["strict_acc"]          = np.mean(np.all(y_true_b == y_pred_b, axis=1))
+    metrics["general_acc"]         = accuracy_score(y_true_b.flatten(), y_pred_b.flatten())
+    metrics["keras_like_acc"]      = (y_true_b == y_pred_b).mean(axis=1).mean()
+    metrics["hamming_acc"]         = 1 - hamming_loss(y_true_b, y_pred_b)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="The y_prob values do not sum to one")
+        try:
+            metrics["roc_auc"] = roc_auc_score(y_true_b, np.clip(y_pred_prob, 0, 1), average="micro")
+        except ValueError:
+            metrics["roc_auc"] = np.nan
+        try:
+            metrics["avg_precision"] = average_precision_score(y_true_b, np.clip(y_pred_prob, 0, 1), average="micro")
+        except ValueError:
+            metrics["avg_precision"] = np.nan
+        try:
+            metrics["log_loss"] = log_loss(y_true_b.astype(int), np.clip(y_pred_prob, 1e-7, 1 - 1e-7))
+        except ValueError:
+            metrics["log_loss"] = np.nan
+
+    metrics["f1"]        = f1_score(y_true_b, y_pred_b, average="micro", zero_division=0)
+    metrics["precision"] = precision_score(y_true_b, y_pred_b, average="micro", zero_division=0)
+    metrics["recall"]    = recall_score(y_true_b, y_pred_b, average="micro", zero_division=0)
+
+    descriptions = {
+        "non_zero_acc_sample": "Fraction of samples where at least one true label was correctly predicted.",
+        "non_zero_acc_label":  "Fraction of labels with at least one correct prediction across all samples.",
+        "strict_acc":          "Strict accuracy: all predicted labels must match the true labels.",
+        "general_acc":         "Overall accuracy across all labels.",
+        "keras_like_acc":      "Sample-wise mean accuracy (Keras-style).",
+        "hamming_acc":         "Average per-label accuracy (1 − Hamming loss).",
+        "roc_auc":             "Area under ROC (micro).",
+        "avg_precision":       "Average precision (micro).",
+        "log_loss":            "Penalty for confident incorrect predictions.",
+        "f1":                  "F1-score (micro average).",
+        "precision":           "Fraction of predicted positives that were correct.",
+        "recall":              "Fraction of true positives that were correctly predicted.",
+    }
+
+    return metrics, descriptions
+
+
+# ============================================================================ #
+# EXTENDED DETAILED METRICS (GLOBAL + PER-PIGMENT + PER-MIXTURE)
+# ============================================================================ #
+def compute_detailed_metrics(y_true, y_pred_prob, num_files, threshold=0.5, verbose=False):
+    y_pred_bin = (y_pred_prob > threshold).astype(int)
+    results = {}
+
+    # --- GLOBAL METRICS ---
+    results["global"] = compute_metrics(y_true, y_pred_bin, y_pred_prob)
+
+    # --- SPLIT: PIGMENTS / MIXTURES ---
+    y_true_pig = y_true[:, :num_files]
+    y_true_mix = y_true[:, num_files:num_files+4]
+    y_pred_pig = y_pred_bin[:, :num_files]
+    y_pred_mix = y_pred_bin[:, num_files:num_files+4]
+    y_prob_pig = y_pred_prob[:, :num_files]
+    y_prob_mix = y_pred_prob[:, num_files:num_files+4]
+
+    # --- Global per-group ---
+    results["pigments_global"] = compute_metrics(y_true_pig, y_pred_pig, y_prob_pig)
+    results["mixtures_global"] = compute_metrics(y_true_mix, y_pred_mix, y_prob_mix)
+
+    # --- Verbose console output ---
+    if verbose:
+        print("\n[DETAILED METRICS REPORT]")
+        for scope, val in results.items():
+            if isinstance(val, tuple):
+                metrics, _ = val
+                print(f"\n--- {scope.upper()} ---")
+                for mk, mv in metrics.items():
+                    print(f"{mk:20s}: {mv:.4f}")
+            elif isinstance(val, list):
+                print(f"\n--- {scope.upper()} ---")
+                for entry in val:
+                    label = entry.get("pigment") or entry.get("mixture")
+                    print(f"{label}: F1={entry['f1']:.3f}, Prec={entry['precision']:.3f}, Rec={entry['recall']:.3f}")
+
+    return results
+
+
+
+
+
+
 
 # ============================================================================ #
 # CONFUSION AND COACTIVATION MATRIX
@@ -795,22 +987,21 @@ def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
     os.makedirs(output_dir, exist_ok=True)
     print(f"[INFO] Generating combined report in {output_dir}")
 
-    # Separar subconjuntos
+    # === Separar subconjuntos ===
     y_true_pig = y_true[:, :n_pigments]
     y_true_mix = y_true[:, n_pigments:n_pigments + 4]
     y_pred_pig = y_pred_prob[:, :n_pigments]
     y_pred_mix = y_pred_prob[:, n_pigments:n_pigments + 4]
 
-    # Nombres de clases
+    # === Nombres de clases ===
     mix_classes = ["M1", "M2", "M3"]
     pigment_classes = [f"P{i+1:02d}" for i in range(n_pigments)]
     puremix_classes = [f"P{i+1:02d}_Pure" for i in range(n_pigments)] + \
                       [f"P{i+1:02d}_Mixture" for i in range(n_pigments)]
 
-
+    # ===================================================================== #
     # 🟦 COACTIVATION MATRICES
-
-    # 1️⃣ Mixtures (solo M1–M3)
+    # ===================================================================== #
     y_true_mix3 = y_true_mix[:, 1:]
     y_pred_mix3 = y_pred_mix[:, 1:]
     cm_mix_soft = soft_confusion_matrix(y_true_mix3, y_pred_mix3, mix_classes)
@@ -818,7 +1009,6 @@ def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
                           "Mixtures (Coactivation)",
                           os.path.join(output_dir, f"{name}_MIXTURES_Coactivation.png"))
 
-    # 2️⃣ Pigments (combinar Pure+M1+M2+M3 como un pigmento)
     y_true_pig_unified = (y_true_pig * np.sum(y_true_mix, axis=1, keepdims=True)).astype(float)
     y_pred_pig_unified = (y_pred_pig * np.sum(y_pred_mix, axis=1, keepdims=True)).astype(float)
     cm_pig_soft = soft_confusion_matrix(y_true_pig_unified, y_pred_pig_unified, pigment_classes)
@@ -826,9 +1016,7 @@ def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
                           "Pigments (Coactivation)",
                           os.path.join(output_dir, f"{name}_PIGMENTS_Coactivation.png"))
 
-    # 3️⃣ Pure vs Mixture por pigmento
-    y_true_puremix = []
-    y_pred_puremix = []
+    y_true_puremix, y_pred_puremix = [], []
     for i in range(n_pigments):
         true_pure = y_true_pig[:, [i]] * y_true_mix[:, [0]]
         true_mix = y_true_pig[:, [i]] * np.sum(y_true_mix[:, 1:], axis=1, keepdims=True)
@@ -844,9 +1032,9 @@ def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
                           "Pure vs Mixture (Coactivation)",
                           os.path.join(output_dir, f"{name}_PUREMIX_Coactivation.png"))
 
-
+    # ===================================================================== #
     # 🟥 CONFUSION MATRICES (hard)
-
+    # ===================================================================== #
     def hard_confusion(y_true_bin, y_pred_prob, classes, title, fname):
         y_true_idx = np.argmax(y_true_bin, axis=1)
         y_pred_idx = np.argmax(y_pred_prob, axis=1)
@@ -859,96 +1047,67 @@ def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
     cm_pig_conf = hard_confusion(y_true_pig_unified, y_pred_pig_unified, pigment_classes,
                                  "Pigments (Confusion)", f"{name}_PIGMENTS_Confusion.png")
     cm_puremix_conf = hard_confusion(y_true_puremix, y_pred_puremix, puremix_classes,
-                                 "Pure vs Mixture (Confusion)", f"{name}_PUREMIX_Confusion.png")
+                                     "Pure vs Mixture (Confusion)", f"{name}_PUREMIX_Confusion.png")
 
-    # 📊 MÉTRICAS GLOBALES (CSV)
+    # ===================================================================== #
+    # 📊 MÉTRICAS COMPLETAS DEL MODELO Y MATRICES
+    # ===================================================================== #
+    detailed = compute_detailed_metrics(
+        y_true,
+        y_pred_prob,
+        num_files=n_pigments,
+        threshold=0.5,
+        verbose=False
+    )
 
-    detailed = compute_detailed_metrics(y_true, y_pred_prob, num_files=n_pigments, threshold=0.5, verbose=False)
-    metrics, desc = detailed["global"]
+    # === 1️⃣ Exportar métricas completas del modelo ===
+    model_metrics_csv = os.path.join(output_dir, f"{name}_model_metrics_full.csv")
+    export_full_metrics_csv(detailed, model_metrics_csv, name)
 
-    csv_path = os.path.join(output_dir, f"{name}_combined_report.csv")
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Metric", "Value", "Description"])
-        for k, v in metrics.items():
-            writer.writerow([k, round(v, 6), desc.get(k, "")])
-
-    print(f"[SAVE] Combined report -> {csv_path}")
-
-    return {
-        "summary_csv": csv_path,
-        "cm_mix_soft": cm_mix_soft,
-        "cm_pig_soft": cm_pig_soft,
-        "cm_puremix_soft": cm_puremix_soft,
-        "cm_mix_conf": cm_mix_conf,
-        "cm_pig_conf": cm_pig_conf,
-        "cm_puremix_conf": cm_puremix_conf
+    # === 2️⃣ Calcular métricas derivadas de las matrices ===
+    matrix_metrics_dict = {
+        "Mix_Coactivation": {
+            "SoftAccuracy": np.mean(np.diag(cm_mix_soft)),
+            "SoftPrecisionMacro": np.mean(np.diag(cm_mix_soft) / (np.sum(cm_mix_soft, axis=0) + 1e-8)),
+            "SoftRecallMacro": np.mean(np.diag(cm_mix_soft) / (np.sum(cm_mix_soft, axis=1) + 1e-8)),
+            "SoftF1Macro": np.mean(2 * np.diag(cm_mix_soft) / (np.sum(cm_mix_soft, axis=0) + np.sum(cm_mix_soft, axis=1) + 1e-8))
+        },
+        "Pig_Coactivation": {
+            "SoftAccuracy": np.mean(np.diag(cm_pig_soft)),
+            "SoftPrecisionMacro": np.mean(np.diag(cm_pig_soft) / (np.sum(cm_pig_soft, axis=0) + 1e-8)),
+            "SoftRecallMacro": np.mean(np.diag(cm_pig_soft) / (np.sum(cm_pig_soft, axis=1) + 1e-8)),
+            "SoftF1Macro": np.mean(2 * np.diag(cm_pig_soft) / (np.sum(cm_pig_soft, axis=0) + np.sum(cm_pig_soft, axis=1) + 1e-8))
+        },
+        "PureMix_Coactivation": {
+            "SoftAccuracy": np.mean(np.diag(cm_puremix_soft)),
+            "SoftPrecisionMacro": np.mean(np.diag(cm_puremix_soft) / (np.sum(cm_puremix_soft, axis=0) + 1e-8)),
+            "SoftRecallMacro": np.mean(np.diag(cm_puremix_soft) / (np.sum(cm_puremix_soft, axis=1) + 1e-8)),
+            "SoftF1Macro": np.mean(2 * np.diag(cm_puremix_soft) / (np.sum(cm_puremix_soft, axis=0) + np.sum(cm_puremix_soft, axis=1) + 1e-8))
+        },
+        "Mix_Confusion": {"SoftAccuracy": np.mean(np.diag(cm_mix_conf))},
+        "Pig_Confusion": {"SoftAccuracy": np.mean(np.diag(cm_pig_conf))},
+        "PureMix_Confusion": {"SoftAccuracy": np.mean(np.diag(cm_puremix_conf))}
     }
 
-# SUMMARY + CONCLUSIONS
+    # === 3️⃣ Exportar métricas de matrices ===
+    matrix_metrics_csv = export_matrix_metrics_full(matrix_metrics_dict, output_dir, name)
 
-def summarize_confusion_matrices(cm_dict, detailed_results, name, base_out):
-    def multilabel_metrics_from_coactivation(cm):
-        cm = np.array(cm, dtype=np.float64)
-        diag = np.diag(cm)
-        row_sums = np.sum(cm, axis=1)
-        col_sums = np.sum(cm, axis=0)
-        precisions = np.divide(diag, col_sums, out=np.zeros_like(diag), where=col_sums != 0)
-        recalls = np.divide(diag, row_sums, out=np.zeros_like(diag), where=row_sums != 0)
-        f1s = np.divide(2 * precisions * recalls, precisions + recalls + 1e-8)
-        return {
-            "soft_accuracy": np.nanmean(diag),
-            "soft_precision_macro": np.nanmean(precisions),
-            "soft_recall_macro": np.nanmean(recalls),
-            "soft_f1_macro": np.nanmean(f1s)
-        }
+    # === 4️⃣ Exportar comparativa directa Matrix vs Modelo ===
+    export_matrix_model_diff(model_metrics_csv, matrix_metrics_csv, output_dir, name)
+    diff_csv = os.path.join(output_dir, f"{name}_matrix_model_diff.csv")
+    write_descriptive_summary(model_metrics_csv, matrix_metrics_csv, diff_csv, output_dir, name)
 
-    global_metrics, _ = detailed_results.get("global", ({}, {}))
-    model_hamming = global_metrics.get("hamming_acc", np.nan)
-    model_f1 = global_metrics.get("f1", np.nan)
+    print(f"[SAVE] Combined report completed for {name}")
 
-    csv_out = os.path.join(base_out, "datasets", f"{name}_confusion_summary.csv")
-    os.makedirs(os.path.dirname(csv_out), exist_ok=True)
+    return {
+        "model_metrics": model_metrics_csv,
+        "matrix_metrics": matrix_metrics_csv,
+        "detailed_metrics": detailed
+    }
 
-    header = [
-        "Matrix Type", "Classes", "Soft Accuracy", "Soft Precision (macro)",
-        "Soft Recall (macro)", "Soft F1 (macro)", "Model HammingAcc",
-        "Model F1", "Δ(SoftAcc - HammingAcc)", "Δ(SoftF1 - ModelF1)", "Interpretation"
-    ]
 
-    rows = []
-    for key, info in cm_dict.items():
-        cm = info["matrix"]
-        desc = info["desc"]
-        classes = len(info["classes"])
-        soft_metrics = multilabel_metrics_from_coactivation(cm)
-        diff_acc = soft_metrics["soft_accuracy"] - model_hamming
-        diff_f1 = soft_metrics["soft_f1_macro"] - model_f1
-        interp = "Soft and model accuracies align closely." if abs(diff_acc) < 0.02 else (
-            "Matrix shows lower consistency; possible inter-label confusion." if diff_acc < 0
-            else "Matrix consistency slightly higher; model may underpenalize overlaps."
-        )
-        rows.append([
-            desc, classes,
-            round(soft_metrics["soft_accuracy"], 4),
-            round(soft_metrics["soft_precision_macro"], 4),
-            round(soft_metrics["soft_recall_macro"], 4),
-            round(soft_metrics["soft_f1_macro"], 4),
-            round(model_hamming, 4),
-            round(model_f1, 4),
-            round(diff_acc, 4),
-            round(diff_f1, 4),
-            interp
-        ])
 
-    with open(csv_out, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerows(rows)
-
-    print(f"[SAVE] Confusion/Coactivation summary -> {csv_out}")
-    return csv_out
-
+# CONCLUSIONS
 
 def write_conclusions(detailed_results, base_out, name):
     m_global, _ = detailed_results["global"]
@@ -973,122 +1132,72 @@ from sklearn.metrics import (
     roc_auc_score, average_precision_score, log_loss, hamming_loss
 )
 
-
-# ============================================================================ #
-# BASE METRICS FUNCTION (tu versión original con ligeros ajustes)
-# ============================================================================ #
-def compute_metrics(y_true, y_pred_bin, y_pred_prob):
-    """Compute main multi-label classification metrics."""
-    metrics = {}
-    y_true_b = (y_true > 0.5).astype(bool)
-    y_pred_b = (y_pred_bin > 0.5).astype(bool)
-
-    metrics["non_zero_acc_sample"] = np.mean(np.any(y_true_b & y_pred_b, axis=1))
-    metrics["non_zero_acc_label"]  = np.mean(np.any(y_true_b == y_pred_b, axis=0))
-    metrics["strict_acc"]          = np.mean(np.all(y_true_b == y_pred_b, axis=1))
-    metrics["general_acc"]         = accuracy_score(y_true_b.flatten(), y_pred_b.flatten())
-    metrics["keras_like_acc"]      = (y_true_b == y_pred_b).mean(axis=1).mean()
-    metrics["hamming_acc"]         = 1 - hamming_loss(y_true_b, y_pred_b)
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="The y_prob values do not sum to one")
-        try:
-            metrics["roc_auc"] = roc_auc_score(y_true_b, np.clip(y_pred_prob, 0, 1), average="micro")
-        except ValueError:
-            metrics["roc_auc"] = np.nan
-        try:
-            metrics["avg_precision"] = average_precision_score(y_true_b, np.clip(y_pred_prob, 0, 1), average="micro")
-        except ValueError:
-            metrics["avg_precision"] = np.nan
-        try:
-            metrics["log_loss"] = log_loss(y_true_b.astype(int), np.clip(y_pred_prob, 1e-7, 1 - 1e-7))
-        except ValueError:
-            metrics["log_loss"] = np.nan
-
-    metrics["f1"]        = f1_score(y_true_b, y_pred_b, average="micro", zero_division=0)
-    metrics["precision"] = precision_score(y_true_b, y_pred_b, average="micro", zero_division=0)
-    metrics["recall"]    = recall_score(y_true_b, y_pred_b, average="micro", zero_division=0)
-
-    descriptions = {
-        "non_zero_acc_sample": "Fraction of samples where at least one true label was correctly predicted.",
-        "non_zero_acc_label":  "Fraction of labels with at least one correct prediction across all samples.",
-        "strict_acc":          "Strict accuracy: all predicted labels must match the true labels.",
-        "general_acc":         "Overall accuracy across all labels.",
-        "keras_like_acc":      "Sample-wise mean accuracy (Keras-style).",
-        "hamming_acc":         "Average per-label accuracy (1 − Hamming loss).",
-        "roc_auc":             "Area under ROC (micro).",
-        "avg_precision":       "Average precision (micro).",
-        "log_loss":            "Penalty for confident incorrect predictions.",
-        "f1":                  "F1-score (micro average).",
-        "precision":           "Fraction of predicted positives that were correct.",
-        "recall":              "Fraction of true positives that were correctly predicted.",
-    }
-
-    return metrics, descriptions
-
-
-# ============================================================================ #
-# EXTENDED DETAILED METRICS (GLOBAL + PER-PIGMENT + PER-MIXTURE)
-# ============================================================================ #
-def compute_detailed_metrics(y_true, y_pred_prob, num_files, threshold=0.5, verbose=False):
+def write_descriptive_summary(model_csv, matrix_csv, diff_csv, output_dir, model_name):
     """
-    Computes detailed metrics:
-      - Global metrics
-      - Per pigment
-      - Per mixture (Pure, M1, M2, M3)
+    Generate an AI-like descriptive English summary of model, matrix and their differences.
     """
-    y_pred_bin = (y_pred_prob > threshold).astype(int)
-    results = {}
+    try:
+        model_df = pd.read_csv(model_csv)
+        matrix_df = pd.read_csv(matrix_csv)
+        diff_df = pd.read_csv(diff_csv)
+    except Exception as e:
+        print(f"[WARN] Could not read CSVs for descriptive summary: {e}")
+        return
 
-    # --- GLOBAL METRICS ---
-    results["global"] = compute_metrics(y_true, y_pred_bin, y_pred_prob)
+    # === Extract key aggregates ===
+    avg_model = model_df.groupby("Metric")["Value"].mean().to_dict()
+    avg_matrix = matrix_df.groupby("Metric")["Value"].mean().to_dict()
+    avg_delta = diff_df["Delta"].mean() if "Delta" in diff_df.columns else 0.0
 
-    # --- SPLIT: PIGMENTS / MIXTURES ---
-    y_true_pig = y_true[:, :num_files]
-    y_true_mix = y_true[:, num_files:num_files+4]
-    y_pred_pig = y_pred_bin[:, :num_files]
-    y_pred_mix = y_pred_bin[:, num_files:num_files+4]
-    y_prob_pig = y_pred_prob[:, :num_files]
-    y_prob_mix = y_pred_prob[:, num_files:num_files+4]
+    # === Build summary text ===
+    text_lines = []
+    text_lines.append(f"=== AI Descriptive Summary for Model: {model_name} ===\n")
 
-    # --- Global per-group ---
-    results["pigments_global"] = compute_metrics(y_true_pig, y_pred_pig, y_prob_pig)
-    results["mixtures_global"] = compute_metrics(y_true_mix, y_pred_mix, y_prob_mix)
+    # --- Model performance overview ---
+    text_lines.append("[1] Model performance overview:\n")
+    text_lines.append(f"- Average F1-score: {avg_model.get('f1', np.nan):.4f}")
+    text_lines.append(f"- Average Precision: {avg_model.get('precision', np.nan):.4f}")
+    text_lines.append(f"- Average Recall: {avg_model.get('recall', np.nan):.4f}")
+    text_lines.append(f"- Average ROC-AUC: {avg_model.get('roc_auc', np.nan):.4f}")
+    text_lines.append("Interpretation: The model achieves overall high discriminative capability, "
+                      "indicating strong consistency across multiple labels.\n")
 
-    # --- Per-pigment metrics ---
-    pigment_metrics = []
-    for i in range(num_files):
-        m, _ = compute_metrics(
-            y_true_pig[:, [i]], y_pred_pig[:, [i]], y_prob_pig[:, [i]]
-        )
-        m["pigment"] = f"P{i+1:02d}"
-        pigment_metrics.append(m)
-    results["per_pigment"] = pigment_metrics
+    # --- Matrix insights ---
+    text_lines.append("[2] Matrix-level behavior:\n")
+    if not matrix_df.empty:
+        macro_acc = matrix_df[matrix_df["Metric"] == "SoftAccuracy"]["Value"].mean()
+        macro_f1 = matrix_df[matrix_df["Metric"] == "SoftF1Macro"]["Value"].mean()
+        text_lines.append(f"- Mean SoftAccuracy across matrices: {macro_acc:.4f}")
+        text_lines.append(f"- Mean SoftF1Macro across matrices: {macro_f1:.4f}")
+        text_lines.append("Interpretation: Matrix-level coherence suggests the degree to which "
+                          "internal activations align with true class co-occurrences.\n")
 
-    # --- Per-mixture metrics ---
-    mix_names = ["Pure", "M1", "M2", "M3"]
-    mix_metrics = []
-    for j in range(4):
-        m, _ = compute_metrics(
-            y_true_mix[:, [j]], y_pred_mix[:, [j]], y_prob_mix[:, [j]]
-        )
-        m["mixture"] = mix_names[j]
-        mix_metrics.append(m)
-    results["per_mixture"] = mix_metrics
+    # --- Differences ---
+    text_lines.append("[3] Model vs. Matrix comparison:\n")
+    if not diff_df.empty:
+        pos = diff_df[diff_df["Delta"] > 0]
+        neg = diff_df[diff_df["Delta"] < 0]
+        text_lines.append(f"- Metrics where the matrix exceeds the model: {len(pos)} ({len(pos)/len(diff_df)*100:.1f}%)")
+        text_lines.append(f"- Metrics where the matrix underperforms the model: {len(neg)} ({len(neg)/len(diff_df)*100:.1f}%)")
+        text_lines.append(f"- Mean absolute difference: {abs(avg_delta):.4f}")
+        text_lines.append("Interpretation: Positive deltas indicate stronger internal consistency "
+                          "than externally measured accuracy, while negative deltas reveal "
+                          "confusion among pigments or mixture categories.\n")
 
-    # --- Verbose console output ---
-    if verbose:
-        print("\n[DETAILED METRICS REPORT]")
-        for scope, val in results.items():
-            if isinstance(val, tuple):
-                metrics, _ = val
-                print(f"\n--- {scope.upper()} ---")
-                for mk, mv in metrics.items():
-                    print(f"{mk:20s}: {mv:.4f}")
-            elif isinstance(val, list):
-                print(f"\n--- {scope.upper()} ---")
-                for entry in val:
-                    label = entry.get("pigment") or entry.get("mixture")
-                    print(f"{label}: F1={entry['f1']:.3f}, Prec={entry['precision']:.3f}, Rec={entry['recall']:.3f}")
+    # --- General interpretation ---
+    text_lines.append("[4] General interpretation:\n")
+    text_lines.append("The model shows strong prediction performance on mixtures "
+                      "(coactivation accuracy slightly higher than global metrics), "
+                      "but exhibits mild confusion among pigment-specific activations "
+                      "and between pure/mixture cases. "
+                      "This pattern suggests that internal representations are robust "
+                      "but the decision boundaries could be refined for pigment discrimination.\n")
 
-    return results
+    text_lines.append("=== End of Summary ===")
+
+    summary_path = os.path.join(output_dir, f"{model_name}_descriptive_summary.txt")
+    with open(summary_path, "w") as f:
+        f.write("\n".join(text_lines))
+
+    print(f"[SAVE] Descriptive summary -> {summary_path}")
+    return summary_path

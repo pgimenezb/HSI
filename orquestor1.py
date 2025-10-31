@@ -14,7 +14,7 @@ from scipy.optimize import nnls
 
 from hsi_lab.data.processor import HSIDataProcessor
 from hsi_lab.data.config import variables
-from report import (
+from report1 import (
     parse_args,
     build_Xy,
     stratified_balanced_split_by_file_pigment_mixture,
@@ -34,16 +34,16 @@ from report import (
     equalize_across_files_by_pigment,
     save_region_subregion_usage,
     export_splits_csv,
-    summarize_model,
-    per_pigment_metrics,
     plot_comparative_spectra,
     write_conclusions,
-    summarize_confusion_matrices,
     soft_confusion_matrix,
     plot_confusion_matrix,
     confusion_from_labels,
     soft_confusion_matrix,
-    compute_detailed_metrics
+    compute_detailed_metrics,
+    export_matrix_model_diff,
+    export_matrix_metrics_full,
+    compute_reflectance_ks_covariance
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -244,8 +244,7 @@ def main():
 
         print(f"[KM] Plots saved in {km_dir}")
 
-
-    # 6️⃣ TRAINING  
+    # 6️⃣ TRAINING & EVALUATION
     model_names = [m.strip() for m in args.models.split(",") if m.strip()]
 
     for name in model_names:
@@ -263,12 +262,9 @@ def main():
             seed=variables.get("seed", 42),
         )
 
-        if isinstance(res, tuple):
-            model = res[0]
-        else:
-            model = res
+        model = res[0] if isinstance(res, tuple) else res
 
-        # === Evaluar en el conjunto de test ===
+        # === EVALUAR MODELO ===
         print(f"[EVAL] Predicting test set with {name}...")
         y_pred_prob = model.predict(X_test, verbose=0)
 
@@ -276,17 +272,27 @@ def main():
         base_out = os.path.join(out_dir, name)
         os.makedirs(base_out, exist_ok=True)
 
-
         # === Guardar DataFrame usado ===
         df_used_path = os.path.join(base_out, f"{name}_dataframe_used.csv")
         df_used.to_csv(df_used_path, index=False)
         print(f"[SAVE] DataFrame -> {df_used_path}")
 
-        # === Guardar uso de región/subregión ===top_confusions
+        # reflectance covariance 
+        cov_dir = os.path.join(out_dir, "covariance")
+        compute_reflectance_ks_covariance(
+            y_true=y_test,
+            y_pred_prob=y_pred_prob,
+            n_pigments=int(variables["num_files"]),
+            output_dir=cov_dir,
+            name=name
+        )
+
+
+        # === Guardar uso de región/subregión ===
         region_usage_path = os.path.join(base_out, f"{name}_region_subregion_usage.csv")
         save_region_subregion_usage(df_raw, df_used, region_usage_path)
 
-        # === Guardar splits ===
+        # === Guardar splits de train/val/test ===
         y_pred_prob_full = np.full_like(y, np.nan, dtype=np.float32)
         y_pred_prob_full[idx_test] = y_pred_prob
         split_paths = export_splits_csv(
@@ -297,7 +303,7 @@ def main():
         for k, p in split_paths.items():
             print(f"[SAVE] Split CSV ({k}) -> {p}")
 
-        # === COACTIVATION AND CONFUSION MATRIX ===
+        # === REPORTES COMPLETOS ===
         report_data = generate_combined_report(
             y_true=y_test,
             y_pred_prob=y_pred_prob,
@@ -305,12 +311,34 @@ def main():
             output_dir=os.path.join(base_out, "evaluation"),
             name=name
         )
-        
-        # === Optional: model summary ===
-        summarize_model(name, variables, X_train, y_train, model, base_out)
 
-        # === Conclusions ===
-        write_conclusions(report_data["detailed_metrics"], base_out, name)
+        # ============================================================
+        # APPLY TRAINED MODEL TO SYNTHETIC K/S MIXTURES
+        # ============================================================
+        print("[KM] Evaluating model on synthetic K/S mixtures...")
+
+        # Cargar modelo entrenado (ya está en la variable 'model')
+        # Asegurarse de que las dimensiones coinciden
+        if mixtures.shape[1] == X_test.shape[1]:
+            y_pred_km = model.predict(mixtures[..., np.newaxis], verbose=0)
+
+            # Guardar resultados
+            km_pred_path = os.path.join(km_dir, "synthetic_predictions.csv")
+            pd.DataFrame(y_pred_km, columns=[f"y_pred_{i}" for i in range(y_pred_km.shape[1])]).to_csv(km_pred_path, index=False)
+            print(f"[SAVE] Synthetic KM mixture predictions -> {km_pred_path}")
+        else:
+            print(f"[WARN] Skipping KM prediction (input mismatch: mixtures={mixtures.shape[1]} vs model={X_test.shape[1]})")
+
+
+        # === Conclusiones ===
+        if "detailed_metrics" in report_data:
+            write_conclusions(report_data["detailed_metrics"], base_out, name)
+        else:
+            print("[WARN] No detailed metrics found for conclusions — skipping.")
+
+        print(f"\n✅ Finished processing model: {name}")
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
