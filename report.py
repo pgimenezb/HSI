@@ -859,7 +859,7 @@ def generate_combined_report(y_true, y_pred_prob, n_pigments, output_dir, name):
     cm_pig_conf = hard_confusion(y_true_pig_unified, y_pred_pig_unified, pigment_classes,
                                  "Pigments (Confusion)", f"{name}_PIGMENTS_Confusion.png")
     cm_puremix_conf = hard_confusion(y_true_puremix, y_pred_puremix, puremix_classes,
-                                     "Pure vs Mixture (Confusion)", f"{name}_PUREMIX_Confusion.png")
+                                 "Pure vs Mixture (Confusion)", f"{name}_PUREMIX_Confusion.png")
 
     # 📊 MÉTRICAS GLOBALES (CSV)
 

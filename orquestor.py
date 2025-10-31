@@ -305,20 +305,12 @@ def main():
             output_dir=os.path.join(base_out, "evaluation"),
             name=name
         )
-
-        # === Optional: model summary and spectra ===
-        base_out = os.path.join(out_dir, name)
-        os.makedirs(base_out, exist_ok=True)
-
-        # Guardar resumen del modelo
+        
+        # === Optional: model summary ===
         summarize_model(name, variables, X_train, y_train, model, base_out)
-        plot_dir = str(base_out)
-
-        # Graficar espectros comparativos
-        plot_comparative_spectra(X_test, y_test, y_pred_prob, plot_dir, name)
 
         # === Conclusions ===
-        write_conclusions(report_data["detailed_metrics"], plot_dir, name)
+        write_conclusions(report_data["detailed_metrics"], base_out, name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
