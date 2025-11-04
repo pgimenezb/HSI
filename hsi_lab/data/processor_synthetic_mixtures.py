@@ -84,22 +84,29 @@ def generate_synthetic_2pigment_mixtures(
 
     # --- Step 3: generate mixtures with random dominant pigment ---
     for i, (p1, p2) in enumerate(full_pairs):
-        # Random dominant: 50% chance to swap roles
-        if random.random() < 0.5:
-            p1, p2 = p2, p1
 
         # Random dominant weight (always >0.5)
         w1 = np.clip(np.random.normal(0.8, 0.05), 0.7, 0.9)
         w2 = 1.0 - w1
 
+        # Randomly swap order to balance dominance across dataset
+        # but always keep dominant pigment first in File
+        if random.random() < 0.5:
+            p1, p2 = p2, p1
+
+        # Now ensure the pigment with higher weight is first in File
+        if w2 > w1:
+            w1, w2 = w2, w1
+            p1, p2 = p2, p1
+
+        # Record multilabel and mixture
         y_true[i, [p1, p2]] = 1
         mixture_info.append((pigment_names[p1], pigment_names[p2], w1, w2))
 
+        # Compute mixture spectrum
         mix = w1 * R_pigments[p1] + w2 * R_pigments[p2]
         mix += np.random.normal(0, 0.002, size=input_len)
         X_mix[i] = np.clip(mix, 0, 1)
-
-    print(f"[OK] Generated {len(X_mix)} balanced mixtures.")
 
     # --- Step 4: build final DataFrame ---
     records = []

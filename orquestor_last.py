@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import ast
+import matplotlib.pyplot as plt
+import matplotlib.cm as mpl_cm
 # Local project imports
 from hsi_lab.data.config import variables
 from report import (
@@ -100,7 +102,6 @@ def main():
         # ⚖️ POST-SPLIT BALANCING BY PIGMENT (according to region_row_quota)
         # ======================================================================
 
-
         region_row_quota = variables.get("region_row_quota", {})
         target_per_pigment = region_row_quota.get(1, 300)  # e.g. 300 per pigment
         print(f"[INFO] Target rows per pigment (region 1 quota): {target_per_pigment}")
@@ -191,12 +192,125 @@ def main():
         # ======================================================================
         print(f"\n[TEST] Evaluating model '{name}' ...")
         y_pred_prob = model.predict(X_test, verbose=0)
+
+
+        """""
+        # === DEBUG: SAVE AND INSPECT MODEL PREDICTIONS ===
+        pred_debug_dir = os.path.join(out_dir, "predictions_debug")
+        os.makedirs(pred_debug_dir, exist_ok=True)
+
+        # --- Shape and basic check ---
+        print(f"[DEBUG] y_pred_prob shape: {y_pred_prob.shape} | range = ({y_pred_prob.min():.4f}, {y_pred_prob.max():.4f})")
+
+        # --- Optional: preview of first sample ---
+        np.set_printoptions(precision=4, suppress=True)
+        print("[DEBUG] First sample prediction (probabilities per label):")
+        print(y_pred_prob[0])
+
+        # --- Convert to DataFrame for CSV inspection ---
+        n_labels = y_pred_prob.shape[1]
+        pred_cols = [f"Pred_{i+1:02d}" for i in range(n_labels)]
+        pred_df = pd.DataFrame(y_pred_prob, columns=pred_cols)
+
+        # Add file/sample info if available
+        if "File" in df_test.columns:
+            pred_df.insert(0, "File", df_test["File"].values)
+        if "w1" in df_test.columns:
+            pred_df.insert(1, "w1_true", df_test["w1"].values)
+        if "w2" in df_test.columns:
+            pred_df.insert(2, "w2_true", df_test["w2"].values)
+
+        # --- Save CSV (for full inspection) ---
+        pred_csv_path = os.path.join(pred_debug_dir, f"{folder_name}_y_pred_prob.csv")
+        pred_df.to_csv(pred_csv_path, index=False)
+        print(f"[SAVE] Raw prediction probabilities → {pred_csv_path}")  """
+
+        
         # --- Convert predicted probabilities to binary with top-2 enforcement ---
         y_pred_bin = np.zeros_like(y_pred_prob, dtype=int)
         for i in range(len(y_pred_prob)):
             # Select top-2 pigments by probability
             top2_idx = np.argsort(y_pred_prob[i])[-2:]
             y_pred_bin[i, top2_idx] = 1
+
+        # === Generate test preview CSV with test vs pred information ===
+        preview_dir = os.path.join(out_dir, "datasets_debug")
+        os.makedirs(preview_dir, exist_ok=True)
+
+        # --- Derivar lista global de pigmentos reales ---
+        def extract_unique_pigments(files_column):
+            all_names = []
+            for entry in files_column:
+                if isinstance(entry, str):
+                    all_names.extend([f.strip() for f in entry.split(";") if f.strip()])
+            return sorted(set(all_names))
+
+        # ⚠️ Usa df_balanced para asegurar todos los pigmentos posibles
+        pigment_names = extract_unique_pigments(df_balanced["File"])
+
+        records = []
+        for i in range(len(y_test)):
+            # Pigmentos verdaderos (tal cual del test)
+            file_entry = df_test.iloc[i]["File"]
+            true_names = [f.strip() for f in str(file_entry).split(";") if f.strip()]
+
+            # Pigmentos predichos: mapea los índices 1 del vector al nombre real
+            active_idx = np.where(y_pred_bin[i] == 1)[0]
+            pred_names = [pigment_names[j] for j in active_idx if j < len(pigment_names)]
+
+            records.append({
+                "Sample": f"S{i+1}",
+                "File": ";".join(true_names),
+                "True_Multi": ";".join(map(str, y_test[i].astype(int))),
+                "Pred_File": ";".join(pred_names),
+                "Pred_Multi": ";".join(map(str, y_pred_bin[i].astype(int))),
+                "w1_true": df_test.iloc[i].get("w1", np.nan),
+                "w2_true": df_test.iloc[i].get("w2", np.nan),
+            })
+
+        df_true_vs_pred = pd.DataFrame(records)
+        true_vs_pred = os.path.join(preview_dir, f"{folder_name}_True_vs_Pred.csv")
+        df_true_vs_pred.to_csv(true_vs_pred, index=False)
+        print(f"[SAVE] Test vs Prediction preview → {true_vs_pred}")
+
+
+
+        print("[CHECK] pigment_names:", pigment_names)
+        print("[CHECK] Example y_train row (first 3 samples):", y_train[:3])
+        print("[DEBUG] First 3 pigment_names:", pigment_names[:3])
+        print("[DEBUG] Last 3 pigment_names:", pigment_names[-3:])
+        print("[DEBUG] Example True_Multi first row:", df_true_vs_pred["True_Multi"].iloc[0])
+        print("[DEBUG] Example Pred_Multi first row:", df_true_vs_pred["Pred_Multi"].iloc[0])
+        print("[DEBUG] pigment_names[:5] =", pigment_names[:5])
+        print("[DEBUG] Example File:", df_train["File"].iloc[0])
+        print("[DEBUG] Example Multi:", df_train["Multi"].iloc[0])
+
+        """""
+        # === DEBUG: SAVE AND INSPECT BINARIZED PREDICTIONS ===
+        bin_debug_dir = os.path.join(out_dir, "predictions_debug")
+        os.makedirs(bin_debug_dir, exist_ok=True)
+
+        print(f"[DEBUG] y_pred_bin shape: {y_pred_bin.shape}")
+        print("[DEBUG] First 5 rows of y_pred_bin (1 = predicted pigment):")
+        print(y_pred_bin[:5])
+
+        # --- Convert to DataFrame ---
+        n_labels = y_pred_bin.shape[1]
+        bin_cols = [f"PredBin_{i+1:02d}" for i in range(n_labels)]
+        bin_df = pd.DataFrame(y_pred_bin, columns=bin_cols)
+
+        # Add file/sample info
+        if "File" in df_test.columns:
+            bin_df.insert(0, "File", df_test["File"].values)
+        if "w1" in df_test.columns:
+            bin_df.insert(1, "w1_true", df_test["w1"].values)
+        if "w2" in df_test.columns:
+            bin_df.insert(2, "w2_true", df_test["w2"].values)
+
+        # --- Save CSV ---
+        bin_csv_path = os.path.join(bin_debug_dir, f"{folder_name}_y_pred_bin.csv")
+        bin_df.to_csv(bin_csv_path, index=False)
+        print(f"[SAVE] Binarized predictions (top-2 per sample) → {bin_csv_path}")"""
 
         # === Metrics ===
         metrics_ref, descR = compute_metrics(y_test, y_pred_bin, y_pred_prob)
@@ -208,141 +322,33 @@ def main():
         }).to_csv(metrics_pathR, index=False)
         print(f"[SAVE] Metrics summary → {metrics_pathR}")
 
-        # comparar test con predicciones
-        proportions_path = os.path.join(out_dir, f"{folder_name}_true_vs_predicted_proportions.png")
 
-        # ======================================================================
-        # 6️⃣ DETAILED PREDICTIONS TABLE + CONFUSION MATRIX (FROM TABLE)
-        # ======================================================================
-        print(f"\n[PREDICT] Generating detailed prediction table for {len(y_test)} test samples...")
+        # === PLOT TRUE vs PREDICTED PROPORTIONS using preview table ===
+        proportions_path = os.path.join(out_dir, f"{folder_name}_true_vs_predicted_proportions_from_preview.png")
 
-        # === 1️⃣ Use the actual test DataFrame (same used to build X_test / y_test) ===
-        df_pred_ref = df_test.copy()
-        print(f"[CHECK] Using df_test directly → {len(df_pred_ref)} samples.")
-
-        # imprimir la longitud de y_test y y_pred_bin
-        print(f"[CHECK] y_test shape: {y_test.shape} | y_pred_bin shape: {y_pred_bin.shape}")
-
-        # === 2️⃣ Extract pigment names from TEST only ===
-        def extract_unique_pigments(files_column):
-            all_names = []
-            for entry in files_column:
-                if isinstance(entry, str):
-                    all_names.extend([f.strip() for f in entry.split(";") if f.strip()])
-            return sorted(set(all_names))
-
-        pigment_names = extract_unique_pigments(df_pred_ref["File"])
-
-        def decode_pigments(vec):
-            """Convierte un vector multilabel (0/1) en lista de nombres de pigmentos activos."""
-            return [pigment_names[i] for i, v in enumerate(vec[:len(pigment_names)]) if v > 0.5]
-
-        # === 3️⃣ Build detailed table using only the real test rows ===
-        records = []
-        for i in range(len(y_test)):
-            true_names = decode_pigments(y_test[i])
-            pred_names = decode_pigments(y_pred_bin[i])
-
-            # This row now corresponds exactly to the same test sample
-            true_row = df_test.iloc[i]
-
-            records.append({
-                "Sample": f"S{i+1}",
-                "File": ";".join(true_names),
-                "True_Multi": ";".join(map(str, y_test[i].astype(int))),
-                "Pred_File": ";".join(pred_names),
-                "Pred_Multi": ";".join(map(str, y_pred_bin[i].astype(int))),
-                "w1_true": true_row.get("w1", np.nan),
-                "w2_true": true_row.get("w2", np.nan),
-            })
-
-        # === 4️⃣ Save ===
-        df_detailed = pd.DataFrame(records)
-        detailed_csv = os.path.join(out_dir, f"{folder_name}_predictions_detailed.csv")
-        df_detailed.to_csv(detailed_csv, index=False)
-        print(f"[SAVE] Detailed test predictions table → {detailed_csv}")
-
-
-
-        # ======================================================================
-        # 6️⃣bis FILTER DOMINANT-ONLY SAMPLES ( TEST)
-        # ======================================================================
-        print("\n[FILTER] Creating dominant-only subset for confusion analysis...")
-
-        # Keep only rows where dominant weight >= 0.6 (configurable threshold)
-        dominant_thresh = 0.6
-        if "w1_true" in df_detailed.columns:
-            df_dom = df_detailed[df_detailed["w1_true"] >= dominant_thresh].copy()
-            print(f"[INFO] Filtered dominant samples: {len(df_dom)} / {len(df_detailed)} "
-                f"({100*len(df_dom)/len(df_detailed):.1f}%) kept (w1 ≥ {dominant_thresh})")
-
-        print("[CLEAN] Keeping only dominant pigment (p1) in multilabel vectors and labels...")
-
-        def keep_only_dominant(row):
-            """Keep only the true dominant pigment (p1) and assign the model's top predicted pigment."""
-            true_vec = np.array(row["True_Multi"].split(";"), dtype=int)
-            pred_vec = np.array(row["Pred_Multi"].split(";"), dtype=int)
-
-            # Identify true dominant pigment (based on w1/w2 or order)
-            if "w1_true" in row and "w2_true" in row and not np.isnan(row["w1_true"]):
-                p1_name = row["File"].split(";")[0] if row["w1_true"] >= row["w2_true"] else row["File"].split(";")[1]
-            else:
-                p1_name = row["File"].split(";")[0]
-
-            # Find the predicted pigment with the highest probability (use Pred_Multi as fallback)
-            pred_file = ""
-            if isinstance(row["Pred_File"], str) and row["Pred_File"].strip():
-                pred_file = row["Pred_File"].split(";")[0].strip()
-            else:
-                # fallback: assign the top predicted pigment index
-                prob_vec = np.array(row["Pred_Multi"].split(";"), dtype=int)
-                if prob_vec.sum() > 0:
-                    pred_idx = np.argmax(prob_vec)
-                    if pred_idx < len(pigment_names):
-                        pred_file = pigment_names[pred_idx]
-                else:
-                    # if everything fails, assign the dominant true pigment (so it doesn't stay blank)
-                    pred_file = p1_name
-
-            # Construct new true/pred vectors
-            mask = np.zeros_like(true_vec)
-            if p1_name in pigment_names:
-                idx_dom = pigment_names.index(p1_name)
-                mask[idx_dom] = 1
-            else:
-                idx_dom = None
-
-            true_vec = true_vec * mask
-
-            pred_mask = np.zeros_like(pred_vec)
-            if pred_file in pigment_names:
-                idx_pred = pigment_names.index(pred_file)
-                pred_mask[idx_pred] = 1
-            pred_vec = pred_mask
-
-            return (
-                ";".join(map(str, true_vec)),
-                ";".join(map(str, pred_vec)),
-                p1_name,
-                pred_file,
+        try:
+            print(f"[PLOT] Generating True vs Predicted proportions chart (from test preview) ...")
+            plot_true_vs_predicted_proportions(
+                csv_path=true_vs_pred,        
+                pigment_names=pigment_names,   
+                save_path=proportions_path,
+                title=f"{name} – True vs Predicted Pigment Proportions (from preview)"
             )
-
-        # Apply cleaning and save
-        df_dom[["True_Multi", "Pred_Multi", "File", "Pred_File"]] = df_dom.apply(
-            lambda r: pd.Series(keep_only_dominant(r)), axis=1
-        )
-
-        dominant_clean_csv = os.path.join(out_dir, f"{folder_name}_predictions_dominant_p1only.csv")
-        df_dom.to_csv(dominant_clean_csv, index=False)
-        print(f"[SAVE] Dominant-only (p1-only) predictions table → {dominant_clean_csv}")
+            print(f"[SAVE] Proportion comparison plot → {proportions_path}")
+        except Exception as e:
+            print(f"[WARN] Could not generate proportions plot from preview: {e}")
 
 
-        # ======================================================================
-        # 7️⃣ CONFUSION MATRIX (STANDARD + DOMINANT-ONLY)
-        # ======================================================================
-        print("[CONFUSION] Computing confusion matrices...")
+        # ====================================================================== #
+        # 7️⃣ CONFUSION MATRIX (from Test vs Pred Preview)
+        # ====================================================================== #
+        print("[CONFUSION] Computing confusion matrices from test preview...")
 
-        # === Get pigments only from TEST ===
+        # === Load the preview table (previously saved) ===
+        df_true_vs_pred = pd.read_csv(true_vs_pred)
+        print(f"[LOAD] Preview table loaded: {len(df_true_vs_pred)} samples")
+
+        # === Extract unique pigment names from the full dataset (to keep order consistent) ===
         def extract_unique_pigments(files_column):
             all_names = []
             for entry in files_column:
@@ -350,42 +356,130 @@ def main():
                     all_names.extend([f.strip() for f in entry.split(";") if f.strip()])
             return sorted(set(all_names))
 
-        # ⚠️ Important: use df_balanced to ensure all pigments are included, even rare ones
         pigment_names = extract_unique_pigments(df_balanced["File"])
         print(f"[INFO] Pigment list initialized with {len(pigment_names)} pigments from full dataset.")
 
-
+        # === Parse multilabel columns (True_Multi, Pred_Multi) ===
         def parse_multilabel(series):
             return np.vstack(series.apply(lambda s: np.array(s.split(";"), dtype=int)))
 
-        # --- Full dataset confusion ---
-        y_true_all = parse_multilabel(df_detailed["True_Multi"])
-        y_pred_all = parse_multilabel(df_detailed["Pred_Multi"])
-        conf_path_all = os.path.join(out_dir, f"{folder_name}_confusion_pigments_full.png")
+
+        # ================================================================= #
+        # 🧩 1️⃣ FULL CONFUSION MATRIX (All Samples)
+        # ================================================================= #
+        print("[CONFUSION] Generating FULL confusion matrix...")
+
+        y_true_all = parse_multilabel(df_true_vs_pred["True_Multi"])
+        y_pred_all = parse_multilabel(df_true_vs_pred["Pred_Multi"])
+
+        conf_path_all = os.path.join(out_dir, f"{folder_name}_confusion_pigments_preview_full.png")
+        csv_used_full = os.path.join(out_dir, f"{folder_name}_confusion_used_full.csv")
+        csv_counts_full = os.path.join(out_dir, f"{folder_name}_confusion_counts_full.csv")
+
+        # 💾 Save dataset used for full matrix
+        df_true_vs_pred.to_csv(csv_used_full, index=False)
+        print(f"[SAVE] Dataset used for FULL confusion matrix → {csv_used_full}")
 
         plot_pigment_confusion_matrix(
             y_true=y_true_all,
             y_pred=y_pred_all,
             pigment_names=pigment_names,
             save_path=conf_path_all,
-            title=f"{name} – Confusion Matrix (All Samples)"
+            title=f"{name} – Confusion Matrix (from Test Preview – All Samples)"
         )
-        print(f"[SAVE] Full confusion matrix → {conf_path_all}")
+        print(f"[SAVE] Full confusion matrix (from preview) → {conf_path_all}")
 
-        # --- Dominant-only confusion (p1 only) ---
-        if len(df_dom) > 0:
-            y_true_dom = np.vstack(df_dom["True_Multi"].apply(lambda s: np.array(s.split(";"), dtype=int)))
-            y_pred_dom = np.vstack(df_dom["Pred_Multi"].apply(lambda s: np.array(s.split(";"), dtype=int)))
-            conf_path_dom = os.path.join(out_dir, f"{folder_name}_confusion_pigments_dominant_p1only.png")
+        # === Count pigment occurrences in True and Pred ===
+        true_counts_full = y_true_all.sum(axis=0)
+        pred_counts_full = y_pred_all.sum(axis=0)
+        df_counts_full = pd.DataFrame({
+            "Pigment": pigment_names,
+            "Count_in_True_Multi": true_counts_full.astype(int),
+            "Count_in_Pred_Multi": pred_counts_full.astype(int)
+        })
+        df_counts_full.to_csv(csv_counts_full, index=False)
+        print(f"[SAVE] Pigment occurrence counts (FULL) → {csv_counts_full}")
 
-            plot_pigment_confusion_matrix(
-                y_true=y_true_dom,
-                y_pred=y_pred_dom,
-                pigment_names=pigment_names,  # ✅ usa el mismo orden que el test
-                save_path=conf_path_dom,
-                title=f"{name} – Confusion Matrix (Dominant Pigments Only)"
+
+        # ================================================================= #
+        # 🧩 2️⃣ DOMINANT-ONLY CONFUSION MATRIX (w1 ≥ 0.6)
+        # ================================================================= #
+        if "w1_true" in df_true_vs_pred.columns:
+            df_dom_prev = df_true_vs_pred[df_true_vs_pred["w1_true"] >= 0.6].copy()
+            print(f"[INFO] Dominant subset: {len(df_dom_prev)} / {len(df_true_vs_pred)} samples (w1 ≥ 0.6)")
+
+            def keep_only_dominant(row):
+                """Keep only the true dominant pigment (p1) and top predicted pigment."""
+                true_vec = np.array(row["True_Multi"].split(";"), dtype=int)
+                pred_vec = np.array(row["Pred_Multi"].split(";"), dtype=int)
+
+                # True dominant pigment = first in File
+                true_name = ""
+                if isinstance(row["File"], str) and row["File"].strip():
+                    true_name = row["File"].split(";")[0].strip()
+
+                # Pred dominant pigment = first in Pred_File
+                pred_name = ""
+                if isinstance(row["Pred_File"], str) and row["Pred_File"].strip():
+                    pred_name = row["Pred_File"].split(";")[0].strip()
+
+                new_true = np.zeros_like(true_vec)
+                new_pred = np.zeros_like(pred_vec)
+
+                if true_name in pigment_names:
+                    new_true[pigment_names.index(true_name)] = 1
+                if pred_name in pigment_names:
+                    new_pred[pigment_names.index(pred_name)] = 1
+
+                return (
+                    ";".join(map(str, new_true)),
+                    ";".join(map(str, new_pred)),
+                    true_name,
+                    pred_name
+                )
+
+            # Apply dominant cleaning
+            df_dom_prev[["True_Multi", "Pred_Multi", "True_P1", "Pred_P1"]] = df_dom_prev.apply(
+                lambda r: pd.Series(keep_only_dominant(r)), axis=1
             )
-            print(f"[SAVE] Dominant-only (p1-only) confusion matrix → {conf_path_dom}")
+
+            if len(df_dom_prev) > 0:
+                y_true_dom = parse_multilabel(df_dom_prev["True_Multi"])
+                y_pred_dom = parse_multilabel(df_dom_prev["Pred_Multi"])
+
+                conf_path_dom = os.path.join(out_dir, f"{folder_name}_confusion_pigments_preview_dominant.png")
+                csv_used_dom = os.path.join(out_dir, f"{folder_name}_confusion_used_dominant.csv")
+                csv_counts_dom = os.path.join(out_dir, f"{folder_name}_confusion_counts_dominant.csv")
+
+                # 💾 Save dataset used for dominant-only matrix
+                df_dom_prev.to_csv(csv_used_dom, index=False)
+                print(f"[SAVE] Dataset used for DOMINANT confusion matrix → {csv_used_dom}")
+
+                plot_pigment_confusion_matrix(
+                    y_true=y_true_dom,
+                    y_pred=y_pred_dom,
+                    pigment_names=pigment_names,
+                    save_path=conf_path_dom,
+                    title=f"{name} – Confusion Matrix (from Test Preview – Dominant Pigments Only, w1 ≥ 0.6)"
+                )
+                print(f"[SAVE] Dominant-only confusion matrix (from preview) → {conf_path_dom}")
+
+                # === Count pigment occurrences in True and Pred ===
+                true_counts_dom = y_true_dom.sum(axis=0)
+                pred_counts_dom = y_pred_dom.sum(axis=0)
+                df_counts_dom = pd.DataFrame({
+                    "Pigment": pigment_names,
+                    "Count_in_True_Multi": true_counts_dom.astype(int),
+                    "Count_in_Pred_Multi": pred_counts_dom.astype(int)
+                })
+                df_counts_dom.to_csv(csv_counts_dom, index=False)
+                print(f"[SAVE] Pigment occurrence counts (DOMINANT) → {csv_counts_dom}")
+
+            else:
+                print("[INFO] No dominant samples found (w1_true ≥ 0.6).")
+
+
+
 
         # ======================================================================
         # 8️⃣ ANALYSIS: BALANCE VS RECALL
@@ -401,10 +495,9 @@ def main():
 
         analyze_balance_vs_recall(
             mixtures_csv=mixtures_csv,
-            predictions_csv=predictions_csv,
+            predictions_csv=true_vs_pred,  
             out_dir=analysis_dir
         )
-
         print(f"[DONE] Correlation and dominance analysis completed → {analysis_dir}")
 
 

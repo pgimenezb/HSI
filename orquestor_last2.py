@@ -211,19 +211,6 @@ def main():
         # comparar test con predicciones
         proportions_path = os.path.join(out_dir, f"{folder_name}_true_vs_predicted_proportions.png")
 
-#----------------------
-        # guardar csv con los pigmentos de la tabla de train verdaderos y las predicciones obtenidas despues de ejectuar el modelo
-        y_pred_prob_train = model.predict(X_train, verbose=0)
-        # --- Convert predicted probabilities to binary with top-2 enforcement ---
-        y_pred_bin = np.zeros_like(y_pred_prob, dtype=int)
-        for i in range(len(y_pred_prob)):
-            # Select top-2 pigments by probability
-            top2_idx = np.argsort(y_pred_prob[i])[-2:]
-            y_pred_bin[i, top2_idx] = 1
-
-
-
-
         # ======================================================================
         # 6️⃣ DETAILED PREDICTIONS TABLE + CONFUSION MATRIX (FROM TABLE)
         # ======================================================================
@@ -274,63 +261,6 @@ def main():
         detailed_csv = os.path.join(out_dir, f"{folder_name}_predictions_detailed.csv")
         df_detailed.to_csv(detailed_csv, index=False)
         print(f"[SAVE] Detailed test predictions table → {detailed_csv}")
-
-
-
-
-
-
-        # ======================================================================
-        # 6️⃣ DETAILED PREDICTIONS TABLE + CONFUSION MATRIX (FROM TABLE)
-        # ======================================================================
-        print(f"\n[PREDICT] Generating detailed prediction table for {len(y_test)} test samples...")
-
-        # === 1️⃣ Use the actual test DataFrame (same used to build X_test / y_test) ===
-        df_pred_ref = df_test.copy()
-        print(f"[CHECK] Using df_test directly → {len(df_pred_ref)} samples.")
-
-        # imprimir la longitud de y_test y y_pred_bin
-        print(f"[CHECK] y_test shape: {y_test.shape} | y_pred_bin shape: {y_pred_bin.shape}")
-
-        # === 2️⃣ Extract pigment names from TEST only ===
-        def extract_unique_pigments(files_column):
-            all_names = []
-            for entry in files_column:
-                if isinstance(entry, str):
-                    all_names.extend([f.strip() for f in entry.split(";") if f.strip()])
-            return sorted(set(all_names))
-
-        pigment_names = extract_unique_pigments(df_pred_ref["File"])
-
-        def decode_pigments(vec):
-            """Convierte un vector multilabel (0/1) en lista de nombres de pigmentos activos."""
-            return [pigment_names[i] for i, v in enumerate(vec[:len(pigment_names)]) if v > 0.5]
-
-        # === 3️⃣ Build detailed table using only the real test rows ===
-        records = []
-        for i in range(len(y_test)):
-            true_names = decode_pigments(y_test[i])
-            pred_names = decode_pigments(y_pred_bin[i])
-
-            # This row now corresponds exactly to the same test sample
-            true_row = df_test.iloc[i]
-
-            records.append({
-                "Sample": f"S{i+1}",
-                "File": ";".join(true_names),
-                "True_Multi": ";".join(map(str, y_test[i].astype(int))),
-                "Pred_File": ";".join(pred_names),
-                "Pred_Multi": ";".join(map(str, y_pred_bin[i].astype(int))),
-                "w1_true": true_row.get("w1", np.nan),
-                "w2_true": true_row.get("w2", np.nan),
-            })
-
-        # === 4️⃣ Save ===
-        df_detailed = pd.DataFrame(records)
-        detailed_csv = os.path.join(out_dir, f"{folder_name}_predictions_detailed.csv")
-        df_detailed.to_csv(detailed_csv, index=False)
-        print(f"[SAVE] Detailed test predictions table → {detailed_csv}")
-
 
 
 
@@ -478,16 +408,14 @@ def main():
         print(f"[DONE] Correlation and dominance analysis completed → {analysis_dir}")
 
 
-
-
-
-
 # ============================================================================ #
 if __name__ == "__main__":
     main()
 
+
+
 """ 
 To execute on the terminal: 
 cd ~/projects/HSI
-python -m orquestor
+python orquestor_last.py --models DNN_bayesian_grid_fixed
 """
