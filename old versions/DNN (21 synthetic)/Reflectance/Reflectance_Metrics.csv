@@ -1,0 +1,13 @@
+Metric,Value,Description
+non_zero_acc_sample,0.7321428571428571,Fraction of samples where at least one true label was correctly predicted.
+non_zero_acc_label,1.0,Fraction of labels with at least one correct prediction across all samples.
+strict_acc,0.27380952380952384,Strict accuracy: all predicted labels must match the true labels.
+general_acc,0.9535714285714286,Overall accuracy across all labels.
+keras_like_acc,0.9535714285714285,Sample-wise mean accuracy (Keras-style).
+hamming_acc,0.9535714285714285,Average per-label accuracy (1 − Hamming loss).
+roc_auc,0.9798090431824904,Area under ROC (micro).
+avg_precision,0.811439438557455,Average precision (micro).
+log_loss,1.2711027689312409,Penalty for confident incorrect predictions.
+f1,0.6408839779005525,F1-score (micro average).
+precision,0.8405797101449275,Fraction of predicted positives that were correct.
+recall,0.5178571428571429,Fraction of true positives that were correctly predicted.

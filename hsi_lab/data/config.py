@@ -65,7 +65,7 @@ variables = {
     "optuna_n_jobs": 1,
     "n_jobs_models": 1,
     "batch_size": 32,
-    "region_row_quota": {1: 30, 2: 10, 3: 10, 4: 10},
+    "region_row_quota": {1: 12300, 2: 0, 3: 0, 4: 0}, #300 per pigment
     "subregion_row_quota": {},
     "balance_seed": 42,
     "test_per_mixture": 2,
