@@ -25,6 +25,11 @@ from report import (
     rebalance_by_pigment,
     analyze_balance_vs_recall
 )
+import os
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from collections import Counter
 
 # ============================================================================ #
 # CONFIGURATION — EASY MANUAL CSV SELECTION
@@ -70,82 +75,87 @@ def main():
         else:
             df_balanced = df_raw.copy()
             print("[INFO] Region quotas skipped (no 'Region' column found).")
+        
+        # ======================================================================
+        # 2️⃣ SIMPLE BALANCED SPLIT BY PIGMENT ROLES (w1 & w2)
+        # ======================================================================
+        print("\n[INFO] Performing simplified balanced split (70/15/15) by pigment roles...")
 
-        # ======================================================================
-        # 2️⃣ STRATIFIED TRAIN/VAL/TEST SPLIT ON BALANCED DATA
-        # ======================================================================
-        idx_train, idx_val, idx_test = stratified_balanced_split(
-            df_balanced,
-            test_size=0.15,
-            val_size=0.15,
-            seed=variables.get("seed", 42)
+        # --- Copy and extract pigment roles (w1, w2)
+        df_balanced = df_balanced.copy()
+
+        def extract_roles(file_str):
+            if isinstance(file_str, str):
+                parts = [p.strip() for p in file_str.split(";") if p.strip()]
+                if len(parts) == 1:
+                    return parts[0], None
+                elif len(parts) >= 2:
+                    return parts[0], parts[1]
+            return None, None
+
+        df_balanced[["Pigment_w1", "Pigment_w2"]] = df_balanced["File"].apply(
+            lambda f: pd.Series(extract_roles(f))
         )
 
-        df_train = df_balanced.iloc[idx_train].reset_index(drop=True)
-        df_val   = df_balanced.iloc[idx_val].reset_index(drop=True)
-        df_test  = df_balanced.iloc[idx_test].reset_index(drop=True)
+        # --- Stratified split by dominant pigment (w1)
+        train_idx, temp_idx = train_test_split(
+            np.arange(len(df_balanced)),
+            test_size=0.30,
+            stratify=df_balanced["Pigment_w1"],
+            random_state=42
+        )
+
+        val_idx, test_idx = train_test_split(
+            temp_idx,
+            test_size=0.50,
+            stratify=df_balanced.loc[temp_idx, "Pigment_w1"],
+            random_state=42
+        )
+
+        # --- Build DataFrames
+        df_train = df_balanced.iloc[train_idx].reset_index(drop=True)
+        df_val   = df_balanced.iloc[val_idx].reset_index(drop=True)
+        df_test  = df_balanced.iloc[test_idx].reset_index(drop=True)
 
         print(f"[OK] Split complete: train={len(df_train)} | val={len(df_val)} | test={len(df_test)}")
 
         # ======================================================================
-        # 3️⃣ BUILD DATA MATRICES DIRECTLY FROM THESE
+        # 3️⃣ CHECK & SAVE PIGMENT ROLE COUNTS
+        # ======================================================================
+        def pigment_role_counts(df, split_name):
+            c_w1 = Counter(df["Pigment_w1"])
+            c_w2 = Counter(df["Pigment_w2"].dropna())
+            pigments = sorted(set(c_w1.keys()) | set(c_w2.keys()))
+            df_counts = pd.DataFrame({
+                "Pigment": pigments,
+                "Count_w1": [c_w1.get(p, 0) for p in pigments],
+                "Count_w2": [c_w2.get(p, 0) for p in pigments],
+                "Total": [c_w1.get(p, 0) + c_w2.get(p, 0) for p in pigments]
+            })
+            csv_path = os.path.join(out_dir, f"{name}_{split_name}_role_counts.csv")
+            df_counts.to_csv(csv_path, index=False)
+            print(f"[SAVE] {split_name} pigment role counts → {csv_path}")
+            return df_counts
+
+        counts_train = pigment_role_counts(df_train, "train")
+        counts_val   = pigment_role_counts(df_val, "val")
+        counts_test  = pigment_role_counts(df_test, "test")
+
+        # --- Quick print summary
+        print("\n[INFO] Example pigment role distribution (train):")
+        print(counts_train.head())
+
+        # ======================================================================
+        # 4️⃣ BUILD MATRICES
         # ======================================================================
         X_train, y_train, input_len = build_Xy(df_train)
         X_val,   y_val,   _         = build_Xy(df_val)
         X_test,  y_test,  _         = build_Xy(df_test)
-        num_classes = y_train.shape[1]
 
+        num_classes = y_train.shape[1]
         print(f"[DATA] input_len={input_len} | X_train={X_train.shape} | y_train={y_train.shape}")
 
 
-        # ======================================================================
-        # ⚖️ POST-SPLIT BALANCING BY PIGMENT (according to region_row_quota)
-        # ======================================================================
-
-        region_row_quota = variables.get("region_row_quota", {})
-        target_per_pigment = region_row_quota.get(1, 300)  # e.g. 300 per pigment
-        print(f"[INFO] Target rows per pigment (region 1 quota): {target_per_pigment}")
-
-
-        def apply_rebalance_and_save(df_part, y_part, split_name):
-            """Apply rebalance_by_pigment, print stats, and save pigment balance CSV."""
-            # Ensure numeric arrays
-            y_part = np.array(y_part, dtype=np.float32)
-
-            # Apply rebalancing
-            idx_bal = np.array(
-                rebalance_by_pigment(df_part, y_part, target_per_pigment=target_per_pigment),
-                dtype=int
-            )
-
-            # Subselect data
-            df_bal = df_part.iloc[idx_bal].reset_index(drop=True)
-            y_bal = y_part[idx_bal]
-
-            # Save pigment counts
-            counts = y_bal.sum(axis=0)
-            balance_df = pd.DataFrame({
-                "Pigment": [f"P{i+1:02d}" for i in range(len(counts))],
-                "Count": counts.astype(int)
-            })
-            balance_csv = os.path.join(out_dir, f"{name}_{split_name}_pigment_balance.csv")
-            balance_df.to_csv(balance_csv, index=False)
-
-            print(f"[SAVE] Pigment balance ({split_name}) → {balance_csv}")
-            print(f"[INFO] {split_name.capitalize()} set balanced -> {len(df_bal)} samples "
-                f"({target_per_pigment} per pigment expected)")
-
-            return df_bal, y_bal
-
-
-        # === Apply to each split equally ===
-        df_train, y_train = apply_rebalance_and_save(df_train, y_train, "train")
-        df_val,   y_val   = apply_rebalance_and_save(df_val,   y_val,   "val")
-        df_test,  y_test  = apply_rebalance_and_save(df_test,  y_test,  "test")
-
-        # === Confirm global status ===
-        print(f"[INFO] Final balanced splits: "
-            f"train={len(df_train)} | val={len(df_val)} | test={len(df_test)}")
 
         # === Ensure numeric arrays before training ===
         y_train = np.array(y_train, dtype=np.float32)
@@ -226,18 +236,22 @@ def main():
         print(f"[SAVE] Raw prediction probabilities → {pred_csv_path}")  """
 
         
-        # --- Convert predicted probabilities to binary with top-2 enforcement ---
+        # ====================================================================== #
+        # 🧩 PREDICTED PROBABILITIES → TOP-2 BINARY (ORDERED)
+        # ====================================================================== #
         y_pred_bin = np.zeros_like(y_pred_prob, dtype=int)
-        for i in range(len(y_pred_prob)):
-            # Select top-2 pigments by probability
-            top2_idx = np.argsort(y_pred_prob[i])[-2:]
-            y_pred_bin[i, top2_idx] = 1
 
-        # === Generate test preview CSV with test vs pred information ===
+        for i in range(len(y_pred_prob)):
+            # Select top-2 indices sorted by descending probability
+            sorted_idx = np.argsort(y_pred_prob[i])[::-1][:2]
+            y_pred_bin[i, sorted_idx] = 1
+
+        # ====================================================================== #
+        # 🧾 GENERATE TEST PREVIEW CSV (TRUE vs PRED, ORDERED by PROBABILITY)
+        # ====================================================================== #
         preview_dir = os.path.join(out_dir, "datasets_debug")
         os.makedirs(preview_dir, exist_ok=True)
 
-        # --- Derivar lista global de pigmentos reales ---
         def extract_unique_pigments(files_column):
             all_names = []
             for entry in files_column:
@@ -245,45 +259,139 @@ def main():
                     all_names.extend([f.strip() for f in entry.split(";") if f.strip()])
             return sorted(set(all_names))
 
-        # ⚠️ Usa df_balanced para asegurar todos los pigmentos posibles
         pigment_names = extract_unique_pigments(df_balanced["File"])
+
+        # ====================================================================== #
+        # 🧩 BUILD TRUE vs PRED TABLE (aligned per-row order of mixtures)
+        # ====================================================================== #
+
+        # Choose prediction mode: "w1", "w2", or "full"
+        pred_mode = "w1"   # ⬅️ cambia esto según quieras filtrar por w1, w2 o full
 
         records = []
         for i in range(len(y_test)):
-            # Pigmentos verdaderos (tal cual del test)
             file_entry = df_test.iloc[i]["File"]
             true_names = [f.strip() for f in str(file_entry).split(";") if f.strip()]
+            true_vec = y_test[i]
+            pred_vec = y_pred_prob[i]  # use raw probabilities for matching
 
-            # Pigmentos predichos: mapea los índices 1 del vector al nombre real
-            active_idx = np.where(y_pred_bin[i] == 1)[0]
-            pred_names = [pigment_names[j] for j in active_idx if j < len(pigment_names)]
+            # --- Identify top-2 predicted pigments ---
+            top2_idx = np.argsort(pred_vec)[::-1][:2]
+            top2_preds = [(pigment_names[j], pred_vec[j]) for j in top2_idx if j < len(pigment_names)]
 
+            # --- Align predicted pigments with the order of the true pigments ---
+            pred_ordered = []
+            for true_name in true_names:
+                # If true pigment is among the top2, keep it first
+                match = [p for p, _ in top2_preds if p == true_name]
+                if match:
+                    pred_ordered.append(match[0])
+                else:
+                    # otherwise pick the most probable remaining one
+                    for p, _ in top2_preds:
+                        if p not in pred_ordered:
+                            pred_ordered.append(p)
+                            break
+
+            # --- Ensure we always have 2 predictions (pad if missing) ---
+            while len(pred_ordered) < 2:
+                pred_ordered.append(
+                    top2_preds[len(pred_ordered)][0] if len(top2_preds) > len(pred_ordered) else "None"
+                )
+
+            # --- Create binary prediction vector depending on the mode ---
+            y_pred_bin[i] = np.zeros_like(y_pred_bin[i])
+
+            if pred_mode == "w1" and len(pred_ordered) > 0:
+                first_pred = pred_ordered[0]
+                if first_pred in pigment_names:
+                    y_pred_bin[i, pigment_names.index(first_pred)] = 1
+
+            elif pred_mode == "w2" and len(pred_ordered) > 1:
+                second_pred = pred_ordered[1]
+                if second_pred in pigment_names:
+                    y_pred_bin[i, pigment_names.index(second_pred)] = 1
+
+            elif pred_mode == "full":
+                for p in pred_ordered[:2]:
+                    if p in pigment_names:
+                        y_pred_bin[i, pigment_names.index(p)] = 1
+
+            # --- True vector stays as is (or you could also limit to dominant pigment) ---
             records.append({
                 "Sample": f"S{i+1}",
                 "File": ";".join(true_names),
-                "True_Multi": ";".join(map(str, y_test[i].astype(int))),
-                "Pred_File": ";".join(pred_names),
+                "True_Multi": ";".join(map(str, true_vec.astype(int))),
+                "Pred_File": ";".join(pred_ordered),
                 "Pred_Multi": ";".join(map(str, y_pred_bin[i].astype(int))),
+                "P1_true": true_names[0] if len(true_names) > 0 else "",
+                "P2_true": true_names[1] if len(true_names) > 1 else "",
+                "P1_pred": pred_ordered[0],
+                "P2_pred": pred_ordered[1],
                 "w1_true": df_test.iloc[i].get("w1", np.nan),
                 "w2_true": df_test.iloc[i].get("w2", np.nan),
             })
 
         df_true_vs_pred = pd.DataFrame(records)
-        true_vs_pred = os.path.join(preview_dir, f"{folder_name}_True_vs_Pred.csv")
+
+        # === Save CSV ===
+        true_vs_pred = os.path.join(preview_dir, f"{folder_name}_True_vs_Pred_{pred_mode}.csv")
         df_true_vs_pred.to_csv(true_vs_pred, index=False)
-        print(f"[SAVE] Test vs Prediction preview → {true_vs_pred}")
+        print(f"[SAVE] Test vs Prediction preview ({pred_mode} mode) → {true_vs_pred}")
 
+            
+        # ======================================================================
+        # 📊 EXTRA SUMMARY: pigment counts as w1/w2 in True & Pred
+        # ======================================================================
 
+        # --- Helper to extract roles (same logic as synthetic mixtures)
+        def extract_roles(file_str):
+            if isinstance(file_str, str):
+                parts = [p.strip() for p in file_str.split(";") if p.strip()]
+                if len(parts) == 1:
+                    return parts[0], None
+                elif len(parts) >= 2:
+                    return parts[0], parts[1]
+            return None, None
 
-        print("[CHECK] pigment_names:", pigment_names)
-        print("[CHECK] Example y_train row (first 3 samples):", y_train[:3])
-        print("[DEBUG] First 3 pigment_names:", pigment_names[:3])
-        print("[DEBUG] Last 3 pigment_names:", pigment_names[-3:])
-        print("[DEBUG] Example True_Multi first row:", df_true_vs_pred["True_Multi"].iloc[0])
-        print("[DEBUG] Example Pred_Multi first row:", df_true_vs_pred["Pred_Multi"].iloc[0])
-        print("[DEBUG] pigment_names[:5] =", pigment_names[:5])
-        print("[DEBUG] Example File:", df_train["File"].iloc[0])
-        print("[DEBUG] Example Multi:", df_train["Multi"].iloc[0])
+        # --- Count occurrences
+     
+
+        def count_roles(series):
+            """Return separate Counters for w1 and w2 positions."""
+            c_w1, c_w2 = Counter(), Counter()
+            for entry in series.dropna():
+                w1, w2 = extract_roles(entry)
+                if w1: c_w1[w1] += 1
+                if w2: c_w2[w2] += 1
+            return c_w1, c_w2
+
+        # --- Apply for TRUE and PRED parts
+        c_true_w1, c_true_w2 = count_roles(df_true_vs_pred["File"])
+        c_pred_w1, c_pred_w2 = count_roles(df_true_vs_pred["Pred_File"])
+
+        # --- Combine all pigments
+        all_pigs = sorted(set(c_true_w1) | set(c_true_w2) | set(c_pred_w1) | set(c_pred_w2))
+
+        df_counts = pd.DataFrame({
+            "Pigment": all_pigs,
+            "Count_w1_true": [c_true_w1.get(p, 0) for p in all_pigs],
+            "Count_w2_true": [c_true_w2.get(p, 0) for p in all_pigs],
+            "Count_w1_pred": [c_pred_w1.get(p, 0) for p in all_pigs],
+            "Count_w2_pred": [c_pred_w2.get(p, 0) for p in all_pigs],
+        })
+
+        df_counts["Total_true"] = df_counts["Count_w1_true"] + df_counts["Count_w2_true"]
+        df_counts["Total_pred"] = df_counts["Count_w1_pred"] + df_counts["Count_w2_pred"]
+
+        # --- Save CSV
+        counts_csv = os.path.join(preview_dir, f"{folder_name}_TruePred_role_counts.csv")
+        df_counts.to_csv(counts_csv, index=False)
+        print(f"[SAVE] Pigment role counts summary → {counts_csv}")
+
+        # --- Optional: quick preview
+        print(df_counts.head())
+
 
         """""
         # === DEBUG: SAVE AND INSPECT BINARIZED PREDICTIONS ===
@@ -361,7 +469,8 @@ def main():
 
         # === Parse multilabel columns (True_Multi, Pred_Multi) ===
         def parse_multilabel(series):
-            return np.vstack(series.apply(lambda s: np.array(s.split(";"), dtype=int)))
+            return np.vstack(series.apply(lambda s: np.round(np.array(s.split(";"), dtype=float)).astype(int)))
+
 
 
         # ================================================================= #
@@ -418,10 +527,14 @@ def main():
                 if isinstance(row["File"], str) and row["File"].strip():
                     true_name = row["File"].split(";")[0].strip()
 
-                # Pred dominant pigment = first in Pred_File
+                # Pred dominant pigment = aquel con mayor probabilidad predicha
                 pred_name = ""
-                if isinstance(row["Pred_File"], str) and row["Pred_File"].strip():
-                    pred_name = row["Pred_File"].split(";")[0].strip()
+                if isinstance(row["Pred_Multi"], str) and row["Pred_Multi"].strip():
+                    pred_vec = np.array(row["Pred_Multi"].split(";"), dtype=float)
+                    top_idx = np.argmax(pred_vec)
+                    if top_idx < len(pigment_names):
+                        pred_name = pigment_names[top_idx]
+
 
                 new_true = np.zeros_like(true_vec)
                 new_pred = np.zeros_like(pred_vec)
@@ -437,6 +550,7 @@ def main():
                     true_name,
                     pred_name
                 )
+
 
             # Apply dominant cleaning
             df_dom_prev[["True_Multi", "Pred_Multi", "True_P1", "Pred_P1"]] = df_dom_prev.apply(
