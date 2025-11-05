@@ -10,6 +10,11 @@ from sklearn.model_selection import train_test_split
 import ast
 import matplotlib.pyplot as plt
 import matplotlib.cm as mpl_cm
+from collections import Counter
+from sklearn.linear_model import LinearRegression
+from scipy.optimize import minimize
+
+
 # Local project imports
 from hsi_lab.data.config import variables
 from report import (
@@ -25,17 +30,13 @@ from report import (
     rebalance_by_pigment,
     analyze_balance_vs_recall
 )
-import os
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from collections import Counter
+
 
 # ============================================================================ #
 # CONFIGURATION — EASY MANUAL CSV SELECTION
 # ============================================================================ #
 # Choose manually which CSV to load as your dataset
-CSV_PATH = "/home/pgimenez/projects/HSI/hsi_lab/data/processor_synthetic_mixtures.csv"
+CSV_PATH = "/home/pgimenez/projects/HSI/hsi_lab/data/processor_synthetic_mixtures_80_20.csv"
 # Examples:
 # CSV_PATH = "data/processor_concat_pure_synthetic.csv"
 # CSV_PATH = "data/processor_pure_pigments.csv"
@@ -602,7 +603,7 @@ def main():
         print("\n[ANALYSIS] Running pigment dominance vs recall correlation...")
 
         # === Paths and output ===
-        mixtures_csv = "/home/pgimenez/projects/HSI/hsi_lab/data/processor_synthetic_mixtures.csv"
+        mixtures_csv = CSV_PATH
         predictions_csv = os.path.join(out_dir, f"{folder_name}_predictions_detailed.csv")
         analysis_dir = os.path.join(out_dir, "analysis_balance_vs_recall")
         os.makedirs(analysis_dir, exist_ok=True)
@@ -614,6 +615,202 @@ def main():
         )
         print(f"[DONE] Correlation and dominance analysis completed → {analysis_dir}")
 
+
+
+
+
+
+
+
+
+
+
+
+
+        # =====================================================================
+        # KUBELKA–MUNK DEMIXING BLOCK (realistic physical regression)
+        # =====================================================================
+
+        # =====================================================================
+        # 1️⃣ Reflectance → K/S conversion (Kubelka–Munk)
+        # =====================================================================
+        def reflectance_to_KS(R):
+            """Convert reflectance (R) to Kubelka–Munk K/S."""
+            R = np.clip(R, 1e-3, 1.0)  # Avoid division by zero
+            return ((1 - R) ** 2) / (2 * R)
+
+
+        # =====================================================================
+        # 2️⃣ KM unmixing (nonlinear optimization)
+        # =====================================================================
+        def km_unmix(KS_mix, k_set, s_set):
+            """Estimate pigment proportions (alphas) via Kubelka–Munk regression."""
+            n = k_set.shape[0]
+
+            def loss_fn(alphas):
+                K_mix_est = np.dot(alphas, k_set)
+                S_mix_est = np.dot(alphas, s_set)
+                KS_est = K_mix_est / S_mix_est
+                return np.mean((KS_est - KS_mix) ** 2)
+
+            constraints = [{'type': 'eq', 'fun': lambda a: np.sum(a) - 1}]
+            bounds = [(0, 1)] * n
+            x0 = np.full(n, 1/n)
+
+            result = minimize(loss_fn, x0, bounds=bounds, constraints=constraints)
+            return result.x if result.success else np.zeros(n)
+
+
+        # =====================================================================
+        # 3️⃣ Apply KM unmixing to all mixtures
+        # =====================================================================
+        def apply_km_unmixing(R_all, k_set, s_set):
+            KS_all = np.array([reflectance_to_KS(r) for r in R_all])
+            alphas = []
+            for i, KS in enumerate(KS_all):
+                alpha = km_unmix(KS, k_set, s_set)
+                alphas.append(alpha)
+                if i % 50 == 0:
+                    print(f"[KM] Processed {i}/{len(R_all)} samples")
+            return np.array(alphas)
+
+
+        # =====================================================================
+        # 4️⃣ Main KM analysis (realistic)
+        # =====================================================================
+        def run_km_analysis(path_test, path_pure, out_dir):
+            os.makedirs(out_dir, exist_ok=True)
+
+            print(f"[LOAD] Reading test dataset: {path_test}")
+            df_test = pd.read_csv(path_test)
+            print(f"[LOAD] Reading pure pigments dataset: {path_pure}")
+            df_pure = pd.read_csv(path_pure)
+
+            # Identify spectral columns (VIS + SWIR)
+            spectral_cols = [c for c in df_test.columns if c.lower().startswith(("vis_", "swir_"))]
+            print(f"[INFO] Found {len(spectral_cols)} spectral bands")
+
+            # =====================================================================
+            # PURE PIGMENT K/S LIBRARY
+            # =====================================================================
+            pigment_means = {}
+            for name, subdf in df_pure.groupby("File"):
+                R_mean = subdf[spectral_cols].mean().values
+                KS_mean = reflectance_to_KS(R_mean)
+                pigment_means[name] = KS_mean
+
+            print(f"[INFO] Built K/S library with {len(pigment_means)} pure pigments")
+
+            # =====================================================================
+            # KM UNMIXING FOR EACH MIXTURE IN TEST SET
+            # =====================================================================
+            R_mix = df_test[spectral_cols].values
+            alpha_true, alpha_pred, R_pred = [], [], []
+            missing_pigments = set()
+
+            for i, row in df_test.iterrows():
+                pigments = [p.strip() for p in row["File"].split(";")]
+                if len(pigments) < 2:
+                    continue
+
+                p1, p2 = pigments[0], pigments[1]
+                KS_mix = reflectance_to_KS(R_mix[i])
+
+                # Ensure pigments exist in pure dataset
+                if p1 not in pigment_means or p2 not in pigment_means:
+                    missing_pigments.add(p1 if p1 not in pigment_means else p2)
+                    continue
+
+                KS1 = pigment_means[p1]
+                KS2 = pigment_means[p2]
+
+                # Approximate K and S (normalized)
+                k_set = np.vstack([KS1, KS2])
+                s_set = np.ones_like(k_set)
+
+                # Perform KM unmixing
+                alpha_est = km_unmix(KS_mix, k_set, s_set)
+
+                alpha_true.append([row["w1"], row["w2"]])
+                alpha_pred.append(alpha_est)
+
+                # Reconstruct reflectance from estimated K/S
+                K_pred = np.dot(alpha_est, k_set)
+                S_pred = np.dot(alpha_est, s_set)
+                KS_pred = K_pred / S_pred
+                R_pred_i = 1 + KS_pred - np.sqrt(KS_pred**2 + 2 * KS_pred)
+                R_pred.append(R_pred_i)
+
+            if missing_pigments:
+                print(f"[WARN] Missing pigments in pure library ({len(missing_pigments)}):")
+                for m in list(missing_pigments)[:10]:
+                    print(f"   - {m}")
+
+            alpha_true = np.array(alpha_true)
+            alpha_pred = np.array(alpha_pred)
+            R_pred = np.array(R_pred)
+
+            # =====================================================================
+            # SAVE RESULTS
+            # =====================================================================
+            df_out = pd.DataFrame({
+                "File": df_test["File"].iloc[:len(alpha_true)],
+                "w1_true": alpha_true[:, 0],
+                "w2_true": alpha_true[:, 1],
+                "w1_pred": alpha_pred[:, 0],
+                "w2_pred": alpha_pred[:, 1],
+            })
+
+            # Add Δ values and RMS
+            df_out["Δw1(%)"] = (df_out["w1_pred"] - df_out["w1_true"]) * 100
+            df_out["Δw2(%)"] = (df_out["w2_pred"] - df_out["w2_true"]) * 100
+            df_out["RMS_Error"] = [
+                np.sqrt(np.mean((R_mix[i] - R_pred[i]) ** 2)) for i in range(len(R_pred))
+            ]
+
+            out_csv = os.path.join(out_dir, "KM_unmixing_results.csv")
+            df_out.to_csv(out_csv, index=False)
+            print(f"[SAVE] KM unmixing results with Δw and RMS -> {out_csv}")
+
+            # =====================================================================
+            # PLOT EXAMPLES
+            # =====================================================================
+            fig, axs = plt.subplots(3, 1, figsize=(10, 10), sharex=True, sharey=True)
+            for i in range(min(3, len(df_out))):
+                file_name = df_out.iloc[i]["File"]
+                true_spec = R_mix[i]
+                pred_spec = R_pred[i]
+                axs[i].plot(true_spec, color="blue", lw=1.8,
+                            label=f"True {file_name}\n"
+                                f"w1={df_out.iloc[i]['w1_true']:.2f}, w2={df_out.iloc[i]['w2_true']:.2f}")
+                axs[i].plot(pred_spec, color="red", ls="--", lw=1.5,
+                            label=f"KM Pred\n"
+                                f"w1={df_out.iloc[i]['w1_pred']:.2f}, w2={df_out.iloc[i]['w2_pred']:.2f}\n"
+                                f"Δw1={df_out.iloc[i]['Δw1(%)']:.2f}%, RMS={df_out.iloc[i]['RMS_Error']:.4f}")
+                axs[i].legend(fontsize=8)
+                axs[i].set_title(f"Sample {i+1}: True vs KM Reconstruction")
+
+            plt.xlabel("Spectral band index")
+            plt.ylabel("Reflectance")
+            plt.tight_layout()
+            plot_path = os.path.join(out_dir, "KM_unmixing_examples.png")
+            plt.savefig(plot_path, dpi=200)
+            plt.close()
+            print(f"[SAVE] KM reconstruction plot -> {plot_path}")
+
+
+        # =====================================================================
+        # 5️⃣ Example execution (you can call this at the end of main)
+        # =====================================================================
+        if __name__ == "__main__":
+            path_test = "/home/pgimenez/projects/HSI/outputs/DNN_bayesian_grid_fixed_synthetic_mixtures_80_20/DNN_bayesian_grid_fixed_synthetic_mixtures_80_20_test.csv"
+            path_pure = "/home/pgimenez/projects/HSI/hsi_lab/data/processor_pure_pigments.csv"
+            out_dir = "/home/pgimenez/projects/HSI/outputs/KM_unmixing"
+
+            run_km_analysis(path_test, path_pure, out_dir)
+
+
+                
 
 # ============================================================================ #
 if __name__ == "__main__":
